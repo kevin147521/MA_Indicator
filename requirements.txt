@@ -1,0 +1,12 @@
+# finlab 量化平台
+finlab>=2.0.13
+
+# Streamlit
+streamlit>=1.30
+
+# Plotly
+plotly>=5.18
+
+# Data
+pandas>=2.0
+numpy>=1.24

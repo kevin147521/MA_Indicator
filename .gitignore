@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Streamlit
+.streamlit/secrets.toml
+.streamlit/credentials.toml
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# 備份 / 大檔
+*.csv.bak
+*.pkl
+*.feather
+backtest_events.csv  # 33 MB，不要推
+data_output/
+
+# 本機 debug
+xie_jinhe_articles/

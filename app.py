@@ -38,6 +38,14 @@ from treemap_page import (
     plot_treemap,
     render_summary_stats,
 )
+from barchart_engine import (
+    resample_to_weekly,
+    calc_barchart_signals,
+    build_barchart_bars,
+    analyze_barchart_trend,
+    RISING_COLOR,
+    FALLING_COLOR,
+)
 
 
 # ============================================================
@@ -984,7 +992,69 @@ with st.sidebar:
 
     st.divider()
 
-    chart_days = st.slider("K 線回看天數", min_value=60, max_value=250, value=120, step=20)
+    # === K線週期 + 寶塔線 控制區 ===
+    st.subheader("📐 K線週期")
+
+    kline_period = st.radio(
+        "週期",
+        options=["日K", "週K"],
+        index=0,
+        key="kline_period",
+        horizontal=True,
+        help="週K = 日線 resample 為週線（Open=週內首日, Close=週內末日）",
+    )
+
+    if kline_period == "日K":
+        chart_days = st.slider(
+            "回看天數",
+            min_value=60, max_value=250, value=120, step=20,
+            key="chart_days_daily",
+        )
+    else:
+        chart_days = st.slider(
+            "回看週數",
+            min_value=60, max_value=156, value=60, step=4,
+            key="chart_days_weekly",
+            help="週K 模式至少要 60 週（要算 MA60）",
+        )
+
+    st.divider()
+
+    st.subheader("🗼 寶塔線（對照用）")
+
+    show_barchart = st.checkbox(
+        "顯示寶塔線",
+        value=False,
+        key="show_barchart",
+        help="寶塔線疊在 K 線下方當副圖，紅=漲、綠=跌（台股慣例）",
+    )
+
+    if show_barchart:
+        barchart_mode = st.selectbox(
+            "寶塔線模式",
+            options=["三日轉向 (經典)", "單日比較"],
+            index=0,
+            key="barchart_mode",
+            help=(
+                "三日轉向：連續 N 日同向才視為新趨勢（過濾雜訊）\n"
+                "單日比較：今日收 vs 昨日收，方向直接是 up/down"
+            ),
+        )
+        if "三日轉向" in barchart_mode:
+            barchart_threshold = st.slider(
+                "三日轉向 N（連續幾日同向才算）",
+                min_value=2, max_value=5, value=3, step=1,
+                key="barchart_threshold",
+            )
+            barchart_mode_internal = "three_line_break"
+        else:
+            barchart_threshold = 1
+            barchart_mode_internal = "simple"
+    else:
+        barchart_mode_internal = None
+        barchart_threshold = 3
+
+    st.divider()
 
     flat_threshold = st.slider(
         "持平容忍門檻 (%)",
@@ -1018,20 +1088,32 @@ if not stock_id:
     st.info("👈 請從左邊選一支股票")
     st.stop()
 
+# 週K 模式：chart_days 是「週數」，要先把日線抓夠再 resample
+fetch_days = chart_days * 5 if kline_period == "週K" else chart_days
+
 try:
-    with st.spinner(f"載入 {stock_id} 資料中…"):
-        df = _load(stock_id, chart_days)
+    with st.spinner(f"載入 {stock_id} 資料中…（{kline_period}）"):
+        df_daily = _load(stock_id, fetch_days)
     name = get_stock_name(stock_id)
 except Exception as e:
     st.error(f"抓資料失敗：`{e}`")
     st.stop()
 
-if len(df) < 60:
-    st.error(f"資料不足 60 筆（目前 {len(df)} 筆），無法計算 MA60")
-    st.stop()
+# 依週期決定 df_view
+if kline_period == "週K":
+    df_weekly = resample_to_weekly(df_daily)
+    if len(df_weekly) < 5:
+        st.error(f"週線資料不足（{len(df_weekly)} 週），請拉長回看天數或改用日K")
+        st.stop()
+    df_view = df_weekly.tail(chart_days).copy()
+    period_label = f"週K（{len(df_view)} 週）"
+else:
+    if len(df_daily) < 60:
+        st.error(f"資料不足 60 筆（目前 {len(df_daily)} 筆），無法計算 MA60")
+        st.stop()
+    df_view = df_daily.tail(chart_days).copy()
+    period_label = f"日K（{len(df_view)} 天）"
 
-# 取最近 chart_days 天
-df_view = df.tail(chart_days).copy()
 close = df_view["close"]
 last_date = df_view.index[-1]
 last_close = float(close.iloc[-1])
@@ -1152,17 +1234,34 @@ st.divider()
 # ============================================================
 # Section 3: K 線圖 + 均線（含預測延伸）
 # ============================================================
-st.subheader("🕯️ K 線圖 + 均線標註")
+st.subheader(f"🕯️ K 線圖 + 均線標註（{period_label}）")
 
 chart_df = build_chart_data(close, predicted_close, DEFAULT_MA_WINDOWS)
 
-# 標記最後一日 + 預測日
-fig = make_subplots(
-    rows=2, cols=1,
-    shared_xaxes=True,
-    vertical_spacing=0.03,
-    row_heights=[0.75, 0.25],
-)
+# 依是否顯示寶塔線決定 subplot 結構
+if show_barchart:
+    barchart_signals = calc_barchart_signals(
+        close, mode=barchart_mode_internal, threshold=barchart_threshold
+    )
+    barchart_bars = build_barchart_bars(close, barchart_signals)
+
+    fig = make_subplots(
+        rows=3, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.03,
+        row_heights=[0.60, 0.15, 0.25],
+    )
+    barchart_row = 2
+    volume_row = 3
+else:
+    fig = make_subplots(
+        rows=2, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.03,
+        row_heights=[0.75, 0.25],
+    )
+    barchart_row = None
+    volume_row = 2
 
 # K 線：到倒數第二根為止（最後一根是預測的虛擬點）
 fig.add_trace(
@@ -1202,6 +1301,34 @@ for w in DEFAULT_MA_WINDOWS:
         row=1, col=1,
     )
 
+# 寶塔線（bar trace，疊在 barchart_row）
+if show_barchart:
+    # 拆成 up / down 兩組，方便 plotly 自動著色
+    up_bars = barchart_bars[barchart_bars["direction"] == "up"]
+    dn_bars = barchart_bars[barchart_bars["direction"] == "down"]
+
+    fig.add_trace(
+        go.Bar(
+            x=up_bars["date"], y=up_bars["height"], base=up_bars["base"],
+            name="🔺 寶塔漲",
+            marker=dict(color=RISING_COLOR, line=dict(color=RISING_COLOR, width=0)),
+            opacity=0.85,
+        ),
+        row=barchart_row, col=1,
+    )
+    fig.add_trace(
+        go.Bar(
+            x=dn_bars["date"], y=dn_bars["height"], base=dn_bars["base"],
+            name="🔻 寶塔跌",
+            marker=dict(
+                color="rgba(0,0,0,0)",  # 空心：透明填色
+                line=dict(color=FALLING_COLOR, width=1.5),
+            ),
+            opacity=1.0,
+        ),
+        row=barchart_row, col=1,
+    )
+
 # Volume
 volume_colors = ["#26a69a" if df_view["close"].iloc[i] >= df_view["open"].iloc[i] else "#ef5350"
                  for i in range(len(df_view))]
@@ -1210,7 +1337,7 @@ fig.add_trace(
         x=df_view.index, y=df_view["volume"],
         name="成交量", marker_color=volume_colors, opacity=0.6,
     ),
-    row=2, col=1,
+    row=volume_row, col=1,
 )
 
 # 預測收盤的水平線
@@ -1227,18 +1354,129 @@ fig.add_hline(
     row=1, col=1,
 )
 
-fig.update_layout(
-    height=650,
+# 圖表 layout
+layout_kwargs = dict(
+    height=750 if show_barchart else 650,
     xaxis_rangeslider_visible=False,
     template="plotly_dark",
     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     hovermode="x unified",
+    barmode="overlay",
 )
+fig.update_layout(**layout_kwargs)
 fig.update_xaxes(rangeslider_visible=False, row=1, col=1)
 fig.update_yaxes(title_text="價格", row=1, col=1)
-fig.update_yaxes(title_text="量", row=2, col=1)
+if show_barchart:
+    fig.update_yaxes(title_text="寶塔線", row=barchart_row, col=1, showgrid=False)
+fig.update_yaxes(title_text="量", row=volume_row, col=1)
 
 st.plotly_chart(fig, width="stretch")
+
+# ============================================================
+# Section 4: 寶塔線對照分析（只有勾選時顯示）
+# ============================================================
+if show_barchart:
+    barchart_trend = analyze_barchart_trend(close, barchart_signals)
+
+    st.subheader("🗼 寶塔線對照分析")
+
+    # 目前趨勢大卡
+    trend_emoji = {"up": "🔺", "down": "🔻", "flat": "➖"}[barchart_trend.current]
+    trend_color = {"up": RISING_COLOR, "down": FALLING_COLOR, "flat": "#ffb300"}[barchart_trend.current]
+    trend_label = {"up": "上漲趨勢", "down": "下跌趨勢", "flat": "持平 / 訊號不足"}[barchart_trend.current]
+
+    mode_label = "三日轉向" if barchart_mode_internal == "three_line_break" else "單日比較"
+    thresh_label = f"（N={barchart_threshold}）" if barchart_mode_internal == "three_line_break" else ""
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.markdown(
+            f"""
+            <div style="border:2px solid {trend_color};border-radius:12px;padding:12px;background:#0e1117;text-align:center;">
+              <div style="color:#aaa;font-size:0.9em;">目前寶塔線</div>
+              <div style="font-size:2.2em;font-weight:bold;color:{trend_color};">{trend_emoji} {trend_label}</div>
+              <div style="color:#aaa;font-size:0.8em;">{mode_label} {thresh_label}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with c2:
+        st.metric(
+            "連續根數",
+            f"{barchart_trend.streak} 根",
+            help="從最近往前數，連續同方向的寶塔線根數",
+        )
+    with c3:
+        if barchart_trend.last_flip_date is not None:
+            flip_emoji = {"up": "🔺", "down": "🔻"}[barchart_trend.last_flip_to]
+            flip_from_label = {"up": "漲", "down": "跌"}[barchart_trend.last_flip_from]
+            flip_to_label = {"up": "漲", "down": "跌"}[barchart_trend.last_flip_to]
+            st.metric(
+                "上次反轉",
+                pd.Timestamp(barchart_trend.last_flip_date).strftime("%Y-%m-%d"),
+                delta=f"{flip_from_label} → {flip_to_label} {flip_emoji}",
+            )
+        else:
+            st.metric("上次反轉", "（無）")
+    with c4:
+        total_bars = barchart_trend.n_up_total + barchart_trend.n_down_total + barchart_trend.n_flat_total
+        if total_bars > 0:
+            up_pct = barchart_trend.n_up_total / total_bars * 100
+            st.metric(
+                "上漲柱佔比",
+                f"{up_pct:.1f}%",
+                delta=f"漲 {barchart_trend.n_up_total} / 跌 {barchart_trend.n_down_total} / 持平 {barchart_trend.n_flat_total}",
+            )
+        else:
+            st.metric("上漲柱佔比", "—")
+
+    # 寶塔線 vs 整體均線訊號 一致性檢查
+    st.markdown("#### 🔄 寶塔線 vs 均線訊號 一致性")
+    ma_signal = result.overall_signal  # 偏多 / 偏空 / 盤整
+    bc_dir = barchart_trend.current     # up / down / flat
+
+    # 規則
+    if bc_dir == "up" and ma_signal == "偏多":
+        consistency = ("🟢 同向", "寶塔線偏多、均線偏多 — 趨勢共振，看多信心強", RISING_COLOR)
+    elif bc_dir == "down" and ma_signal == "偏空":
+        consistency = ("🟢 同向", "寶塔線偏空、均線偏空 — 趨勢共振，看空信心強", FALLING_COLOR)
+    elif bc_dir == "up" and ma_signal == "偏空":
+        consistency = ("⚠️ 背離", "寶塔線偏多但均線偏空 — 短期反彈 vs 中期趨勢，保守看待", "#ffb300")
+    elif bc_dir == "down" and ma_signal == "偏多":
+        consistency = ("⚠️ 背離", "寶塔線偏空但均線偏多 — 短期拉回 vs 中期趨勢，可能是買點", "#ffb300")
+    elif bc_dir == "flat":
+        consistency = ("➖ 訊號不足", "寶塔線尚未形成明確趨勢，等待方向", "#888")
+    else:
+        consistency = ("🟡 混合", f"寶塔 {bc_dir} vs 均線 {ma_signal}，雙方都不明確", "#888")
+
+    cons_label, cons_text, cons_color = consistency
+    st.markdown(
+        f"""
+        <div style="border-left:4px solid {cons_color};background:#0e1117;padding:12px;border-radius:6px;">
+          <div style="font-size:1.2em;font-weight:bold;">{cons_label}</div>
+          <div style="color:#ccc;margin-top:4px;">{cons_text}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # 近期寶塔線序列表
+    with st.expander("📋 近期寶塔線序列（最近 20 根）"):
+        recent = barchart_bars.tail(20).copy()
+        recent["方向"] = recent["direction"].map(
+            {"up": "🔺 漲", "down": "🔻 跌", "flat": "➖ 平"}
+        )
+        recent["漲跌"] = recent["close"] - recent["prev_close"]
+        recent["漲跌%"] = (recent["close"] / recent["prev_close"] - 1) * 100
+        show_cols = ["date", "方向", "prev_close", "close", "漲跌", "漲跌%"]
+        recent = recent[show_cols].rename(columns={
+            "date": "日期", "prev_close": "前收", "close": "收盤",
+        })
+        recent["前收"] = recent["前收"].map(lambda v: f"{v:,.2f}")
+        recent["收盤"] = recent["收盤"].map(lambda v: f"{v:,.2f}")
+        recent["漲跌"] = recent["漲跌"].map(lambda v: f"{v:+,.2f}")
+        recent["漲跌%"] = recent["漲跌%"].map(lambda v: f"{v:+.2f}%")
+        st.dataframe(recent, width="stretch", hide_index=True)
 
 # ============================================================
 # Footer

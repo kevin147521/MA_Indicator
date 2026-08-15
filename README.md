@@ -2,7 +2,7 @@
 
 個人用的台股量化分析平台，Streamlit + FinLab 5 個頁面：
 
-1. **📈 均線預測** — 個股 K 線 + 5/10/20/60 MA，預測下個交易日收盤後均線
+1. **📈 均線預測** — 個股 K 線 + 5/10/20/60 MA，預測下個交易日收盤後均線。**支援日K/週K 切換 + 寶塔線（單日/三日轉向）對照**
 2. **🗺️ 市值漲跌地圖** — 全台股 treemap（市值/成交 vs 漲跌幅，台股配色）
 3. **🧪 跌破站回回測** — 跌破 N MA 後要幾天才能站回並創新高
 4. **💰 融資維持率** — 大盤融資維持率 + 上市/上櫃融資餘額 + 買賣超
@@ -79,6 +79,7 @@
 MA_Indicator/
 ├── app.py                       # Streamlit 主程式（5 個 page 路由）
 ├── ma_engine.py                 # 均線計算純函式
+├── barchart_engine.py           # 寶塔線 + 日K/週K resample
 ├── ma_breakout_backtest.py      # 跌破/站回事件偵測
 ├── margin_page.py               # 融資維持率
 ├── treemap_page.py              # 全市場 treemap
@@ -89,6 +90,19 @@ MA_Indicator/
 ├── requirements.txt             # Python 套件
 └── .gitignore                   # 排除 __pycache__ / .streamlit/secrets
 ```
+
+### 寶塔線說明
+
+均線預測頁左側可切換：
+
+- **K線週期**：日K / 週K（週K = 日線 resample `W-FRI`，Open=週內首日、Close=週內末日）
+- **寶塔線模式**：
+  - 單日比較：今日收 vs 昨日收，方向直接是 up/down
+  - 三日轉向（經典）：連續 N 日同向才視為新趨勢，N 可調 2~5（過濾雜訊）
+- **視覺**：紅色實體 = 漲、綠色空心 = 跌（台股慣例），疊在 K 線下方當副圖
+- **對照分析**：顯示目前趨勢、連續根數、上次反轉日期、寶塔線 vs 均線訊號是否一致
+
+週K 模式注意：回看週數 slider 最小 60 週（要算 MA60），預設 60 週。
 
 ---
 

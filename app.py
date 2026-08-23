@@ -99,7 +99,7 @@ with st.sidebar:
     st.header("📑 頁面")
     page = st.radio(
         "選擇功能",
-        ["📈 均線預測", "🗺️ 市值漲跌地圖", "🧪 跌破站回回測", "💰 融資維持率", "🔄 資料更新"],
+        ["📈 均線預測", "🗺️ 市值漲跌地圖", "🧪 跌破站回回測", "💰 融資維持率", "📦 SCFI 航運指數", "🔄 資料更新"],
         label_visibility="collapsed",
         key="page_selector",
     )
@@ -540,9 +540,21 @@ if page == "💰 融資維持率":
 
 
 # ============================================================
+# SCFI 航運指數頁面
+# ============================================================
+def render_scfi_page():
+    from scfi_page import render_scfi_page as _render
+    _render()
+
+
+if page == "📦 SCFI 航運指數":
+    render_scfi_page()
+    st.stop()
+
+
+# ============================================================
 # 資料更新頁面
 # ============================================================
-def render_data_update_page():
     from data_update import (
         run_update, get_last_update_summary, load_status,
         DATA_SOURCES, STATUS_PATH,

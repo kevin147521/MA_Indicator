@@ -487,24 +487,42 @@ def _render_etf_detail(etf_code: str):
     stocks = holdings.get("stocks", [])
     return_stats = detail.get("returnStats", {})
 
+    def fmt_pct(v, plus_sign=True):
+        """None-safe 百分比格式化。新上市沒資料回 'N/A'。"""
+        if v is None:
+            return "N/A"
+        sign = "+" if plus_sign and v > 0 else ""
+        return f"{sign}{v:.2f}%"
+
+    def fmt_num(v, decimals=2, plus_sign=False):
+        if v is None:
+            return "N/A"
+        sign = "+" if plus_sign and v > 0 else ""
+        return f"{sign}{v:,.{decimals}f}"
+
     # Header
     st.markdown(f"### {info.get('code')} {info.get('name')}")
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("發行商", info.get("issuer", "—"))
-    c2.metric("經理人", info.get("manager", "—"))
-    c3.metric("管理費", f"{info.get('managementFee', 0):.2f}%")
-    c4.metric("上市日", info.get("launchDate", "—"))
+    c1.metric("發行商", info.get("issuer") or "—")
+    c2.metric("經理人", info.get("manager") or "—")
+    c3.metric("管理費", fmt_num(info.get("managementFee"), decimals=2) + "%" if info.get("managementFee") is not None else "N/A")
+    c4.metric("上市日", info.get("launchDate") or "—")
 
     c1, c2, c3, c4 = st.columns(4)
     if latest:
-        c1.metric("最新淨值", f"{latest.get('nav', 0):.2f}")
-        c2.metric("市價", f"{latest.get('price', 0):.2f}")
-        c3.metric("折溢價", f"{latest.get('premium', 0):+.2f}%")
-        c4.metric("規模(億)", f"{latest.get('aum', 0)/1e8:.1f}")
+        c1.metric("最新淨值", fmt_num(latest.get("nav")))
+        c2.metric("市價", fmt_num(latest.get("price")))
+        c3.metric("折溢價", fmt_pct(latest.get("premium")))
+        c4.metric("規模(億)", fmt_num(latest.get("aum", 0) / 1e8 if latest.get("aum") is not None else None, decimals=1))
+    else:
+        c1.metric("最新淨值", "N/A")
+        c2.metric("市價", "N/A")
+        c3.metric("折溢價", "N/A")
+        c4.metric("規模(億)", "N/A")
     c1, c2, c3 = st.columns(3)
-    c1.metric("1Y 報酬", f"{return_stats.get('return1Y', 0):+.2f}%")
-    c2.metric("3Y 報酬", f"{return_stats.get('return3Y', 0):+.2f}%")
-    c3.metric("殖利率", f"{detail.get('trailingYield', 0):.2f}%")
+    c1.metric("1Y 報酬", fmt_pct(return_stats.get("return1Y")))
+    c2.metric("3Y 報酬", fmt_pct(return_stats.get("return3Y")))
+    c3.metric("殖利率", fmt_num(detail.get("trailingYield"), decimals=2) + "%" if detail.get("trailingYield") is not None else "N/A")
 
     st.caption(f"📅 持股 snapshot: {holdings.get('snapshotDate')} ｜ 資料源: {holdings.get('source')}")
 

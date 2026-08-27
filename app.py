@@ -99,7 +99,7 @@ with st.sidebar:
     st.header("📑 頁面")
     page = st.radio(
         "選擇功能",
-        ["📈 均線預測", "🗺️ 市值漲跌地圖", "📊 主動 ETF 持股", "🧪 跌破站回回測", "💰 融資維持率", "🔄 資料更新"],
+        ["📈 均線預測", "🗺️ 市值漲跌地圖", "📊 主動 ETF 持股", "📊 被動 ETF 追蹤", "🧪 跌破站回回測", "💰 融資維持率", "🔄 資料更新"],
         label_visibility="collapsed",
         key="page_selector",
     )
@@ -549,6 +549,19 @@ def render_active_etf_page():
 
 if page == "📊 主動 ETF 持股":
     render_active_etf_page()
+    st.stop()
+
+
+# ============================================================
+# 被動式 ETF 追蹤頁面
+# ============================================================
+def render_passive_etf_page():
+    from passive_etf_page import render_passive_etf_page as _render
+    _render()
+
+
+if page == "📊 被動 ETF 追蹤":
+    render_passive_etf_page()
     st.stop()
 
 

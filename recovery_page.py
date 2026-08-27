@@ -78,7 +78,7 @@ def render_recovery_page():
 
     # === 控制區 ===
     with st.container():
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
         with col1:
             market = st.radio(
                 "市場範圍",
@@ -94,13 +94,14 @@ def render_recovery_page():
                 key="recovery_lookback",
                 help="過去 N 日內要曾經跌破所有 4 條均線",
             )
+        with col3:
             ma60_slope = st.slider(
                 "MA60 斜率回看天數",
                 min_value=5, max_value=60, value=20, step=5,
                 key="recovery_ma60_slope",
                 help="比較 N 日前的 MA60 跟現在的 MA60，必須往上",
             )
-        with col3:
+        with col4:
             min_avg_volume = st.number_input(
                 "最低 20 日均量 (張)",
                 min_value=0, value=500, step=100,
@@ -108,7 +109,7 @@ def render_recovery_page():
                 help="過濾量太小的冷門股，0 = 不過濾",
             )
             exclude_etf = st.checkbox(
-                "排除 ETF/權證 (etfinfo security_categories)",
+                "排除 ETF/權證",
                 value=True,
                 key="recovery_excl_etf",
             )
@@ -169,6 +170,16 @@ def render_recovery_page():
     with st.spinner(f"掃描 {len(close_wide.columns)} 檔個股…"):
         df_result = _run_scan(close_wide.to_csv().encode(), lookback, ma60_slope)
 
+    # === 抓市值（會扣 finlab daily quota，cache 24 小時） ===
+    if len(df_result) > 0:
+        with st.spinner("抓市值（扣 finlab quota，24 小時 cache）…"):
+            market_value_map = _load_market_value_today(market_code)
+        df_result["market_value"] = df_result["stock_id"].map(market_value_map)
+        df_result["market_value_yi"] = df_result["market_value"] / 1e8  # 億
+    else:
+        df_result["market_value"] = None
+        df_result["market_value_yi"] = None
+
     # === 概況 ===
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("掃描個股數", f"{len(close_wide.columns)} 檔")
@@ -191,7 +202,7 @@ def render_recovery_page():
     with col1:
         sort_by = st.selectbox(
             "排序依據",
-            options=["MA60 斜率", "距 MA20 距離", "近期 20 日漲幅", "近期 60 日漲幅"],
+            options=["市值", "MA60 斜率", "距 MA20 距離", "近期 20 日漲幅", "近期 60 日漲幅"],
             index=0,
             key="recovery_sort",
         )
@@ -201,11 +212,15 @@ def render_recovery_page():
         min_slope = st.slider("MA60 斜率下限 (%)", 0.0, 5.0, 0.0, 0.1)
 
     sort_col = {
+        "市值": "market_value_yi",
         "MA60 斜率": "ma60_slope_20d",
         "距 MA20 距離": "dist_to_ma20_pct",
         "近期 20 日漲幅": "recent_20_return",
         "近期 60 日漲幅": "recent_60_return",
     }[sort_by]
+
+    df_show = df_show.dropna(subset=[sort_col])
+    df_show = df_show.sort_values(sort_col, ascending=False).head(top_n)
 
     df_show = df_result[df_result["ma60_slope_20d"] >= min_slope].copy()
     df_show = df_show.sort_values(sort_col, ascending=False).head(top_n)
@@ -223,14 +238,14 @@ def render_recovery_page():
     st.subheader(f"📋 通過個股清單（{len(df_show)} 檔）")
 
     display_cols = [
-        "stock_id", "name", "current_close",
+        "stock_id", "name", "market_value_yi", "current_close",
         "current_ma5", "current_ma10", "current_ma20", "current_ma60",
         "ma60_slope_20d", "dist_to_ma20_pct",
         "recent_20_return", "recent_60_return",
     ]
     df_disp = df_show[display_cols].copy()
     df_disp.columns = [
-        "代號", "名稱", "收盤",
+        "代號", "名稱", "市值(億)", "收盤",
         "MA5", "MA10", "MA20", "MA60",
         "MA60 斜率%", "距 MA20%",
         "20日漲幅%", "60日漲幅%",
@@ -241,10 +256,15 @@ def render_recovery_page():
         sign = "+" if plus and v > 0 else ""
         return f"{sign}{v:.{dec}f}"
 
+    def fmt_yi(v):
+        if pd.isna(v) or v is None: return "—"
+        return f"{v:,.0f}"
+
     for c in ["收盤", "MA5", "MA10", "MA20", "MA60"]:
         df_disp[c] = df_disp[c].apply(lambda v: fmt(v, dec=2))
     for c in ["MA60 斜率%", "距 MA20%", "20日漲幅%", "60日漲幅%"]:
         df_disp[c] = df_disp[c].apply(lambda v: fmt(v, plus=True, dec=2))
+    df_disp["市值(億)"] = df_disp["市值(億)"].apply(fmt_yi)
 
     def color_pos(v):
         if v == "—": return ""
@@ -405,3 +425,24 @@ def _load_security_categories():
     cat = data.get("security_categories")
     cat["stock_id"] = cat["stock_id"].astype(str)
     return cat
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def _load_market_value_today(market_code: str = "sii") -> dict:
+    """
+    抓今天市值（會扣 finlab daily quota，cache 24 小時避免重複扣）。
+    回傳 {stock_id: market_value_in_yuan} dict。
+    """
+    from finlab import data
+    if market_code == "sii":
+        with data.universe(market="TSE"):
+            mv = data.get("etl:market_value")
+    elif market_code == "otc":
+        with data.universe(market="OTC"):
+            mv = data.get("etl:market_value")
+    else:
+        mv = data.get("etl:market_value")
+    if mv is None or mv.empty:
+        return {}
+    last_day = mv.iloc[-1]
+    return {str(sid): float(val) for sid, val in last_day.items() if pd.notna(val)}

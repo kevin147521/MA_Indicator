@@ -403,7 +403,7 @@ def _render_stock_detail(stock_code: str, flow_rankings: list):
     df_holders = pd.DataFrame([
         {
             "etfCode": k,
-            "etfName": v["etfName"],
+            "etfName": v["etf_name"],
             "shares": v["shares"],
             "weight": v["weight"],
         }
@@ -445,7 +445,7 @@ def _render_stock_detail(stock_code: str, flow_rankings: list):
         f"- 被 **{n_total}** 家主動式 ETF 持有，合計權重 **{total_weight:.1f}%**"
     )
     if n_changed > 0:
-        st.markdown(f- "今日 **{n_changed}** 家有動作（加碼 / 減碼 / 新增 / 移除）")
+        st.markdown(f"- 今日 **{n_changed}** 家有動作（加碼 / 減碼 / 新增 / 移除）")
 
     # 顯示
     cols = ["etfCode", "etfName", "weight", "shares", "sharesDelta", "amount", "action"]

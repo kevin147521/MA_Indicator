@@ -219,11 +219,16 @@ def render_recovery_page():
         "近期 60 日漲幅": "recent_60_return",
     }[sort_by]
 
+    df_show = df_result[df_result["ma60_slope_20d"] >= min_slope].copy()
     df_show = df_show.dropna(subset=[sort_col])
     df_show = df_show.sort_values(sort_col, ascending=False).head(top_n)
 
-    df_show = df_result[df_result["ma60_slope_20d"] >= min_slope].copy()
-    df_show = df_show.sort_values(sort_col, ascending=False).head(top_n)
+    if len(df_show) == 0:
+        st.warning(
+            f"⚠️ 條件太嚴格：MA60 斜率 ≥ {min_slope:.1f}% 且有市值資料的個股為 0。"
+            f"把斜率下限拉低（建議 0~2%）或放寬其他條件試試。"
+        )
+        return
 
     # === 補中文名稱 ===
     name_map = {}

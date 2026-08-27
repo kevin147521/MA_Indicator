@@ -99,7 +99,7 @@ with st.sidebar:
     st.header("📑 頁面")
     page = st.radio(
         "選擇功能",
-        ["📈 均線預測", "🗺️ 市值漲跌地圖", "📊 主動 ETF 持股", "📊 被動 ETF 追蹤", "🧪 跌破站回回測", "💰 融資維持率", "🔄 資料更新"],
+        ["📈 均線預測", "🗺️ 市值漲跌地圖", "📊 主動 ETF 持股", "📊 被動 ETF 追蹤", "🔍 均線收復", "🧪 跌破站回回測", "💰 融資維持率", "🔄 資料更新"],
         label_visibility="collapsed",
         key="page_selector",
     )
@@ -223,6 +223,19 @@ def render_treemap_page():
 # 路由
 if page == "🗺️ 市值漲跌地圖":
     render_treemap_page()
+    st.stop()
+
+
+# ============================================================
+# 均線收復個股搜尋頁面
+# ============================================================
+def render_recovery_page():
+    from recovery_page import render_recovery_page as _render
+    _render()
+
+
+if page == "🔍 均線收復":
+    render_recovery_page()
     st.stop()
 
 

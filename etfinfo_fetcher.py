@@ -39,6 +39,10 @@ HEADERS = {
     "Accept": "application/json",
     "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
     "Referer": "https://www.etfinfo.tw/active",
+    # 強制只用 gzip/deflate，避免 etfinfo server 回 br (brotli) 觸發
+    # Python requests 的 brotli decoder 在某些 chunked response 會失敗
+    # (brotli: decoder process called with data when 'can_accept_more_data()' is False)
+    "Accept-Encoding": "gzip, deflate",
 }
 
 TIMEOUT = 15  # seconds

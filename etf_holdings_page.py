@@ -26,6 +26,12 @@ from etfinfo_fetcher import (
     fetch_etf_detail,
     get_stock_etf_holders,
 )
+from etf_history_storage import (
+    load_recent_snapshots,
+    aggregate_top_changes,
+    snapshot_stats,
+    save_today_snapshot,
+)
 
 
 # ============================================================
@@ -83,6 +89,11 @@ def render_active_etf_page():
             f"📡 同步狀態：{synced}/{total} 已更新（{stale} 檔過期，"
             f"可能還沒拿到當日持股 snapshot）"
         )
+
+    st.divider()
+
+    # === 區塊 1.5: 過去 N 天加碼排行（從 snapshot DB 累積） ===
+    _render_period_top_changes()
 
     st.divider()
 
@@ -579,6 +590,151 @@ def _render_etf_detail(etf_code: str):
             margin=dict(l=10, r=10, t=30, b=10),
         )
         st.plotly_chart(fig, width="stretch")
+
+
+def _render_period_top_changes():
+    """
+    過去 N 天加碼排行（從 snapshot DB 累積）
+    注意：因為 etfinfo.tw 不提供歷史 topChanges API，這份資料需要每天抓一次存進本地 DB。
+    從今天開始累積，30 天後才能看到完整 30 天歷史。
+    """
+    stats = snapshot_stats()
+
+    if stats["total"] == 0:
+        st.subheader("📅 過去 N 天加碼排行")
+        st.info(
+            "💡 還沒有任何 snapshot 資料。etfinfo.tw 不提供歷史 topChanges API，"
+            "需要從今天開始每天抓一次存進本地 DB。\n\n"
+            "**點下方按鈕立即抓今天**：之後每天 14:30 排程自動抓（需手動加 launchd）。"
+        )
+        if st.button("🌐 抓今天 snapshot 開始建立 DB", type="primary"):
+            with st.spinner("抓 etfinfo.tw 中…"):
+                try:
+                    p = save_today_snapshot()
+                    st.success(f"✓ 已存：{p.name}")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"❌ 抓取失敗：`{e}`")
+        return
+
+    # 有資料
+    c1, c2, c3 = st.columns([2, 2, 1])
+    with c1:
+        days = st.slider(
+            "回看天數",
+            min_value=1,
+            max_value=max(7, min(stats["total"], 90)),
+            value=min(stats["total"], 7),
+            step=1,
+            key="period_days",
+            help=f"目前 DB 有 {stats['total']} 天 snapshot（{stats['earliest']} ~ {stats['latest']}）",
+        )
+    with c2:
+        action_filter = st.radio(
+            "動作",
+            options=["加碼 (increased)", "減碼 (decreased)", "新增 (added)", "移除 (removed)", "全部"],
+            index=0,
+            horizontal=True,
+            key="period_action",
+        )
+    with c3:
+        st.write("")
+        st.write("")
+        if st.button("🌐 抓今天 snapshot", width="stretch"):
+            with st.spinner("抓 etfinfo.tw 中…"):
+                try:
+                    p = save_today_snapshot()
+                    st.success(f"✓ 已存：{p.name}")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"❌ 抓取失敗：`{e}`")
+
+    st.caption(
+        f"📅 資料區間：{stats['earliest']} ~ {stats['latest']}（共 {stats['total']} 天）"
+    )
+    if stats["total"] < days:
+        st.warning(
+            f"⚠️ DB 只有 {stats['total']} 天，少於你要看的 {days} 天。"
+            f"會用 {stats['total']} 天計算。"
+        )
+        days = stats["total"]
+
+    # 載入 + 聚合
+    snaps = load_recent_snapshots(days=days)
+    if not snaps:
+        st.info(f"過去 {days} 天內沒有 snapshot 資料")
+        return
+
+    action_map = {
+        "加碼 (increased)": "increased",
+        "減碼 (decreased)": "decreased",
+        "新增 (added)": "added",
+        "移除 (removed)": "removed",
+        "全部": "all",
+    }
+    target_action = action_map[action_filter]
+    df = aggregate_top_changes(snaps, action=target_action)
+
+    if df.empty:
+        st.info(f"過去 {days} 天沒有「{action_filter}」動作的個股")
+        return
+
+    st.subheader(f"📅 過去 {len(snaps)} 天 {action_filter}排行（{len(df)} 個股）")
+
+    # Top N
+    top_n = st.slider("顯示前 N 名", 5, 50, 20, 5, key="period_top_n")
+    df_show = df.head(top_n)
+
+    df_disp = df_show[[
+        "stock_code", "stock_name", "industry", "n_etfs", "etf_list",
+        "total_shares_delta", "total_weight_delta", "n_days", "last_date",
+    ]].copy()
+    df_disp.columns = [
+        "代號", "名稱", "產業", "ETF家數", "ETF清單",
+        "累計張數變化", "累計權重%", "出現天數", "最後出現",
+    ]
+
+    def fmt_int(v):
+        if pd.isna(v) or v is None: return "—"
+        return f"{v:+,.0f}"
+    def fmt_pct(v):
+        if pd.isna(v) or v is None: return "—"
+        return f"{v:+.2f}%"
+
+    df_disp["累計張數變化"] = df_disp["累計張數變化"].apply(fmt_int)
+    df_disp["累計權重%"] = df_disp["累計權重%"].apply(fmt_pct)
+    df_disp["ETF清單"] = df_disp["ETF清單"].apply(
+        lambda s: s if len(s) <= 50 else s[:47] + "…"
+    )
+
+    def color_amount(v):
+        try:
+            num = float(v.replace(",", "").replace("+", ""))
+        except Exception:
+            return ""
+        if num > 0: return "color: #ef5350; font-weight: 600"
+        if num < 0: return "color: #26a69a; font-weight: 600"
+        return ""
+
+    st.dataframe(
+        df_disp.style.map(color_amount, subset=["累計張數變化", "累計權重%"]),
+        width="stretch",
+        hide_index=True,
+    )
+
+    # 共識個股（多家 ETF 同進同出）特別 highlight
+    consensus = df[df["n_etfs"] >= 2]
+    if len(consensus) > 0:
+        st.markdown(
+            f"**🎯 共識個股（{len(consensus)} 個股，2 家以上 ETF 同期動作）**"
+        )
+        for _, r in consensus.head(10).iterrows():
+            arrow = "📈" if r["total_shares_delta"] > 0 else "📉"
+            st.markdown(
+                f"- {arrow} **{r['stock_code']} {r['stock_name']}** — "
+                f"{r['n_etfs']} 家 ETF（{r['etf_list']}）累計 "
+                f"{r['total_shares_delta']:+,.0f} 張"
+            )
 
 
 def _render_etf_top_changes(etf_code: str):

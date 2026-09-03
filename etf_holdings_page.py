@@ -528,6 +528,11 @@ def _render_etf_detail(etf_code: str):
 
     st.divider()
 
+    # === 今日異動（從 summary.etfs[].topChanges 拿） ===
+    _render_etf_top_changes(etf_code)
+
+    st.divider()
+
     # 完整持股表
     st.markdown("#### 完整持股")
     if not stocks:
@@ -574,3 +579,104 @@ def _render_etf_detail(etf_code: str):
             margin=dict(l=10, r=10, t=30, b=10),
         )
         st.plotly_chart(fig, width="stretch")
+
+
+def _render_etf_top_changes(etf_code: str):
+    """從 summary.etfs[].topChanges 拿這檔 ETF 的今日異動並顯示"""
+    @st.cache_data(ttl=1800, show_spinner=False)
+    def _get_top_changes(code):
+        try:
+            summary = fetch_active_summary()
+        except Exception:
+            return []
+        for e in summary.get("etfs", []):
+            if e.get("code") == code:
+                return e.get("topChanges", [])
+        return []
+
+    top_changes = _get_top_changes(etf_code)
+
+    if not top_changes:
+        st.markdown("#### 🔄 今日異動")
+        st.info("這檔 ETF 今天沒有持股異動（可能還沒拿到當日 snapshot，或今日無動作）")
+        return
+
+    # 統計四種動作
+    type_emoji = {
+        "added": "🆕 新增",
+        "removed": "❌ 移除",
+        "increased": "📈 加碼",
+        "decreased": "📉 減碼",
+    }
+    n_added = sum(1 for x in top_changes if x.get("type") == "added")
+    n_removed = sum(1 for x in top_changes if x.get("type") == "removed")
+    n_inc = sum(1 for x in top_changes if x.get("type") == "increased")
+    n_dec = sum(1 for x in top_changes if x.get("type") == "decreased")
+
+    st.markdown(f"#### 🔄 今日異動（共 {len(top_changes)} 筆）")
+
+    # 4 個 metric
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("🆕 新增", f"{n_added} 檔")
+    c2.metric("❌ 移除", f"{n_removed} 檔")
+    c3.metric("📈 加碼", f"{n_inc} 檔")
+    c4.metric("📉 減碼", f"{n_dec} 檔")
+
+    # 詳細表
+    df = pd.DataFrame(top_changes)
+    # 格式化欄位
+    df["動作"] = df["type"].map(type_emoji).fillna(df["type"])
+    df["張數變化"] = pd.to_numeric(df["sharesDelta"], errors="coerce")
+    df["新權重%"] = pd.to_numeric(df["newWeight"], errors="coerce")
+    df["舊權重%"] = pd.to_numeric(df["oldWeight"], errors="coerce")
+    df["權重變化%"] = pd.to_numeric(df["weightDelta"], errors="coerce")
+
+    # 排序：依張數變化絕對值
+    df["abs_shares"] = df["張數變化"].abs()
+    df = df.sort_values("abs_shares", ascending=False)
+
+    # 篩選動作（用 radio 切換）
+    action_filter = st.radio(
+        "篩選動作",
+        options=["全部", "🆕 新增", "❌ 移除", "📈 加碼", "📉 減碼"],
+        index=0,
+        horizontal=True,
+        key=f"top_changes_filter_{etf_code}",
+    )
+    type_to_filter = {
+        "全部": None,
+        "🆕 新增": "added",
+        "❌ 移除": "removed",
+        "📈 加碼": "increased",
+        "📉 減碼": "decreased",
+    }
+    target_type = type_to_filter[action_filter]
+    if target_type:
+        df_show = df[df["type"] == target_type].copy()
+    else:
+        df_show = df.copy()
+
+    if len(df_show) == 0:
+        st.info(f"沒有 {action_filter} 的個股")
+        return
+
+    # 顯示
+    df_disp = df_show[["code", "name", "動作", "張數變化", "新權重%", "舊權重%", "權重變化%"]].copy()
+    df_disp.columns = ["代號", "名稱", "動作", "張數變化", "新權重%", "舊權重%", "權重變化%"]
+
+    def color_change(v):
+        if pd.isna(v) or v == 0: return ""
+        if v > 0: return "color: #ef5350; font-weight: 600"
+        if v < 0: return "color: #26a69a; font-weight: 600"
+        return ""
+
+    st.dataframe(
+        df_disp.style.format({
+            "張數變化": "{:+,.0f}",
+            "新權重%": lambda v: "—" if pd.isna(v) else f"{v:.2f}",
+            "舊權重%": lambda v: "—" if pd.isna(v) else f"{v:.2f}",
+            "權重變化%": lambda v: "—" if pd.isna(v) else f"{v:+.2f}",
+        }).map(color_change, subset=["張數變化", "權重變化%"]),
+        width="stretch",
+        hide_index=True,
+    )

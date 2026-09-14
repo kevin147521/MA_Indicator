@@ -493,21 +493,31 @@ def omega_score_vs_benchmark(report):
 def extract_report_stats(report) -> dict:
     """
     從 finlab report 抽關鍵指標（給 streamlit metric 用）
+
+    finlab 2.0.16 get_stats() 回傳的 key:
+    - cagr           (annual return as decimal, 1.25 = 125%)
+    - total_return   (cumulative return as decimal)
+    - max_drawdown   (negative decimal)
+    - daily_sharpe
+    - daily_sortino
+    - daily_mean / daily_vol / daily_skew / daily_kurt
+    - win_ratio      (single trade win %)
+    - win_year_perc  (positive year %)
+    - calmar
     """
     try:
         stats = report.get_stats()
     except Exception:
         stats = {}
 
-    daily_sortino = stats.get('daily_sortino', None)
-    annual_return = stats.get('annual_return', None)
-    mdd = stats.get('max_drawdown', None)
-    sharpe = stats.get('daily_sharpe', None)
-
     return {
-        'daily_sortino': daily_sortino,
-        'annual_return': annual_return,
-        'max_drawdown': mdd,
-        'daily_sharpe': sharpe,
+        'daily_sortino': stats.get('daily_sortino', None),
+        'annual_return': stats.get('cagr', None),  # finlab key 是 cagr 不是 annual_return
+        'total_return': stats.get('total_return', None),
+        'max_drawdown': stats.get('max_drawdown', None),
+        'daily_sharpe': stats.get('daily_sharpe', None),
+        'calmar': stats.get('calmar', None),
+        'win_ratio': stats.get('win_ratio', None),
+        'win_year_perc': stats.get('win_year_perc', None),
         'all_stats': stats,
     }

@@ -18,6 +18,25 @@
 - 💼 Portfolio 組合：4 策略 1/4 等權重組合（沿用 notebook cell 7-8）
 - 🎲 蒙地卡羅壓力：bootstrap 95/97.5/99/99.7% 4 分位 Sortino/Omega 衰減
 
+### 已組成的資料版本
+
+跑完 sim() + Portfolio 會自動存成「資料版本」，方便日後比較/部署：
+
+| 位置 | 內容 |
+|---|---|
+| `~/.openclaw/ma_indicator_data/portfolio_versions.db` | V2 SQLite，每個版本 1 row（含 version/date/portfolio_cagr/mdd/sortino/omega_vs_market + 完整 raw_json） |
+| `data/portfolio_versions/{version}.json` | 給 git 版本控制的 JSON snapshot（含 4 個獨立策略 stats + Portfolio stats + 模擬參數） |
+
+**目前已存**：`v1_combination_1`（2026-09-15，notebook cell 7 的 4 策略 1/4 等權組合）— CAGR +98.8%, MDD -28.5%, Sortino 4.31, Omega vs 大盤 1.388。
+
+查詢範例：
+```python
+import sqlite3
+conn = sqlite3.connect("/Users/kevin/.openclaw/ma_indicator_data/portfolio_versions.db")
+for row in conn.execute("SELECT version, portfolio_cagr, portfolio_sortino FROM portfolio_versions"):
+    print(row)
+```
+
 ---
 
 ## 本地啟動

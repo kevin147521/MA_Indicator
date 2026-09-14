@@ -147,12 +147,12 @@ def render_portfolio_page():
                 fee_ratio=fee_bps,
             )
 
-    # ----- Tab 3: Portfolio 4 策略組合 -----
+    # ----- Tab 3: Portfolio 4 策略組合（跟預設組合同樣兩欄佈局） -----
     with tab_portfolio:
         st.subheader("💼 Portfolio：4 策略組合（沿用 notebook cell 7-8）")
-        st.caption("選預設組合 → 跑 4 個 sim() → 組合成 Portfolio → 顯示 stats → 可選存成資料版本 / 推到 finlab cloud")
+        st.caption("從 notebook cell 7-8 抽出的 4 策略 1/4 等權組合，可組合成 Portfolio 並推到 finlab cloud。")
 
-        # 1) 選 preset
+        # 1) 選 combo
         preset_names = [p['name'] for p in ps.PORTFOLIO_PRESETS]
         preset_idx = st.selectbox(
             "選擇 Portfolio 組合",
@@ -162,58 +162,54 @@ def render_portfolio_page():
         )
         preset = ps.PORTFOLIO_PRESETS[preset_idx]
 
-        with st.expander("📋 組合內容", expanded=False):
-            st.caption(preset['description'])
+        # 2) 兩欄：左 = 啟用策略, 右 = 組合說明（跟預設 tab 一致）
+        cond_cols = st.columns([1, 1])
+        with cond_cols[0]:
+            st.markdown("**啟用策略**")
             for s in preset['strategies']:
                 st.markdown(
-                    f"- **{s['name']}** (cell {s['cell']}, {len(s['conditions'])} 條件, weight {s['weight']*100:.0f}%)"
+                    f"- ✅ **{s['name']}** (cell {s.get('cell', '?')}, "
+                    f"{len(s['conditions'])} 條件, weight {s['weight']*100:.0f}%)"
                 )
-                st.caption(f"  條件：`{' & '.join(s['conditions'])}`")
+        with cond_cols[1]:
+            st.markdown("**組合說明**")
+            st.caption(preset['description'])
+            st.caption(f"來源：notebook cell {'7' if preset_idx == 0 else '8'}")
+            st.caption(f"權重：4 策略各 1/4 等權（共 100%）")
+            n_total_cond = sum(len(s['conditions']) for s in preset['strategies'])
+            st.caption(f"條件總數：{n_total_cond}（跨 {len(preset['strategies'])} 策略）")
+            st.caption(f"跑 sim 預估耗時：~20 秒（cache hit 後每個 4-5 秒）")
 
-        # 2) 進階參數
-        adv = st.columns(3)
-        with adv[0]:
-            total_balance = st.number_input(
-                "總資金 (TWD)", min_value=100_000, max_value=100_000_000,
-                value=12_000_000, step=1_000_000,
-                help="推到 finlab cloud 時的總倉位大小",
-                key="port_total_balance",
-            )
-        with adv[1]:
-            rebalance_safety_weight = st.slider(
-                "Rebalance 安全權重 (0=積極)", 0.0, 0.5, 0.0, step=0.05,
-                key="port_rebalance",
-            )
-        with adv[2]:
-            save_version_name = st.text_input(
-                "資料版本名稱", value=f"v{preset_idx+1}_comb{preset_idx+1}",
-                key="port_version_name",
-                help="存 SQLite / JSON 時用的 version id",
-            )
+        # 3) 進階參數（折疊，跟預設 tab 的 expander 一致）
+        with st.expander("⚙️ 進階參數（選填）", expanded=False):
+            adv = st.columns(3)
+            with adv[0]:
+                total_balance = st.number_input(
+                    "總資金 (TWD)", min_value=100_000, max_value=100_000_000,
+                    value=12_000_000, step=1_000_000,
+                    help="推到 finlab cloud 時的總倉位大小",
+                    key="port_total_balance",
+                )
+            with adv[1]:
+                rebalance_safety_weight = st.slider(
+                    "Rebalance 安全權重 (0=積極)", 0.0, 0.5, 0.0, step=0.05,
+                    key="port_rebalance",
+                )
+            with adv[2]:
+                save_version_name = st.text_input(
+                    "資料版本名稱", value=f"v{preset_idx+1}_comb{preset_idx+1}",
+                    key="port_version_name",
+                    help="存 SQLite / JSON 時用的 version id",
+                )
 
-        st.divider()
-
-        # 3) 組 Portfolio 按鈕
+        # 4) 主按鈕（跟預設 tab 一樣 type="primary"）
         if st.button("🚀 組 Portfolio（跑 4 個 sim() + 組合）", type="primary", key="port_compose"):
             _compose_portfolio_ui(preset_idx, total_balance, rebalance_safety_weight)
 
-        # 4) 顯示之前跑的結果（從 session_state）
+        # 5) 結果顯示區（組完才出現，跟預設 tab 的「回測結果」section 一致）
         if st.session_state.get('portfolio_result'):
-            _render_portfolio_result(st.session_state['portfolio_result'])
-
-        # 5) 推 finlab cloud 按鈕
-        if st.session_state.get('portfolio_result') and st.session_state['portfolio_result'].get('port'):
             st.divider()
-            st.markdown("### ☁️ 推到 finlab cloud")
-            st.caption(
-                "⚠️ **會直接同步到你的 finlab 帳號 portfolio**。確認要推再按。"
-            )
-            if st.button("☁️ 推到 finlab cloud (PortfolioSyncManager.to_cloud)", type="secondary", key="port_push_cloud"):
-                _push_to_cloud_ui(
-                    st.session_state['portfolio_result']['port'],
-                    total_balance,
-                    rebalance_safety_weight,
-                )
+            _render_portfolio_result(st.session_state['portfolio_result'])
 
     # ----- Tab 4: 蒙地卡羅壓力測試 -----
     with tab_stress:

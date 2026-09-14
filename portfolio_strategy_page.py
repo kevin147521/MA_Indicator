@@ -753,7 +753,13 @@ def _render_yearly_performance(port, port_stats: dict):
             xaxis_title='',
             legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
         )
-        st.plotly_chart(fig, width="stretch")
+        # 🔑 Plotly click event → streamlit rerun → 從 event 取點擊的年份
+        event = st.plotly_chart(
+            fig,
+            on_select="rerun",
+            key="yearly_bar_chart",
+            selection_mode="points",
+        )
 
         # 表格
         st.dataframe(df, hide_index=True, width="stretch")
@@ -772,8 +778,134 @@ def _render_yearly_performance(port, port_stats: dict):
                 f"FY{current_year} (YTD)：Portfolio **+{port_vals[-1]:.1f}%** vs "
                 f"加權指數 **+{bench_vals[-1]:.1f}%**"
             )
+
+        # ============ 月度績效 drill-down（點擊年份或下拉選單） ============
+        st.markdown("##### 📆 月度績效（點上方 bar 或選年份）")
+
+        # 從 click event 拿年份
+        clicked_label = None
+        if event and hasattr(event, 'selection') and event.selection and event.selection.points:
+            clicked_label = event.selection.points[0].x
+
+        # Dropdown 當備援（給 click 失效或用戶想直接選的情境）
+        default_idx = 0
+        if clicked_label and clicked_label in x_labels:
+            default_idx = x_labels.index(clicked_label)
+        selected_label = st.selectbox(
+            "查看年度",
+            options=x_labels,
+            index=default_idx,
+            key="monthly_year_select",
+            help="💡 也可以點上方 bar chart 切換",
+        )
+
+        # 解析年份（"FY2026 (YTD)" → 2026）
+        import re as _re
+        m = _re.match(r"FY(\d{4})", selected_label)
+        if m:
+            selected_year = int(m.group(1))
+            _render_monthly_breakdown(port_stats, selected_year, selected_label)
     except Exception as e:
         st.warning(f"無法顯示年度績效：`{e}`")
+        import traceback
+        with st.expander("traceback"):
+            st.code(traceback.format_exc())
+
+
+def _render_monthly_breakdown(port_stats: dict, year: int, label: str):
+    """渲染選定年份的月度績效（12 個月 bar chart + 月勝率 + 最佳/最差月）"""
+    try:
+        return_table = port_stats.get('return_table', {})
+        # finlab return_table key 是 str(year) 或 int(year)，兩種都試
+        year_data = return_table.get(str(year), {}) or return_table.get(year, {})
+
+        if not year_data:
+            st.info(f"{label} 沒有月度資料")
+            return
+
+        # 月份順序
+        MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+        # 過濾掉 YTD 這個非月份的 key
+        monthly = {m: year_data.get(m) for m in MONTHS if m in year_data}
+
+        if not monthly:
+            st.info(f"{label} 沒有月度資料")
+            return
+
+        months = list(monthly.keys())
+        returns = [monthly[m] * 100 for m in months]  # 轉 %
+
+        # ============ Metrics ============
+        positive = [r for r in returns if r > 0]
+        negative = [r for r in returns if r < 0]
+        n_total = len(returns)
+        n_win = len(positive)
+        n_loss = len(negative)
+        win_rate = (n_win / n_total * 100) if n_total else 0
+        avg_month = sum(returns) / n_total if n_total else 0
+
+        if returns:
+            best_idx = returns.index(max(returns))
+            worst_idx = returns.index(min(returns))
+            best_label = f"{months[best_idx]} +{returns[best_idx]:.1f}%"
+            worst_label = f"{months[worst_idx]} {returns[worst_idx]:+.1f}%"
+        else:
+            best_label = "—"
+            worst_label = "—"
+
+        # YTD 對照
+        ytd = year_data.get('YTD')
+        ytd_str = f"+{ytd*100:.1f}%" if ytd is not None else "—"
+
+        # 標題列
+        st.markdown(f"**📆 {label} 月度績效**")
+        mc = st.columns(5)
+        mc[0].metric("月勝率", f"{win_rate:.0f}%", delta=f"{n_win}/{n_total} 月")
+        mc[1].metric("平均月報酬", f"{avg_month:+.1f}%")
+        mc[2].metric("最佳月", best_label)
+        mc[3].metric("最差月", worst_label)
+        mc[4].metric("年度累計", ytd_str)
+
+        # ============ 12 月 bar chart（正綠 / 負紅） ============
+        fig = go.Figure()
+        colors = ['#26a69a' if r >= 0 else '#ef5350' for r in returns]
+        fig.add_trace(go.Bar(
+            x=months,
+            y=returns,
+            marker_color=colors,
+            text=[f"+{r:.1f}%" if r >= 0 else f"{r:.1f}%" for r in returns],
+            textposition='outside',
+            hovertemplate='%{x}<br>報酬：%{y:+.2f}%<extra></extra>',
+        ))
+        fig.update_layout(
+            height=380,
+            yaxis_title='月度報酬 (%)',
+            yaxis_tickformat='.0f',
+            xaxis_title='',
+            showlegend=False,
+            margin=dict(t=30, b=30),
+        )
+        # 0 線
+        fig.add_hline(y=0, line_dash='dot', line_color='gray', line_width=1)
+        st.plotly_chart(fig, width="stretch")
+
+        # 表格（也可選用）
+        table_df = pd.DataFrame({
+            '月份': months,
+            '月度報酬': [f"{r:+.1f}%" for r in returns],
+            '正/負': ['🟢 +' if r > 0 else ('🔴 ' if r < 0 else '➖') for r in returns],
+        })
+        st.dataframe(table_df, hide_index=True, width="stretch")
+
+        # 摘要
+        st.caption(
+            f"💡 **{label} 月度摘要**：{n_win} 個月正報酬 / {n_loss} 個月負報酬｜"
+            f"最高月 {best_label}｜最低月 {worst_label}｜"
+            f"平均月 {avg_month:+.1f}% (若月勝率 > 50% 表示策略在該年度穩定賺錢)"
+        )
+    except Exception as e:
+        st.warning(f"無法顯示 {label} 月度績效：`{e}`")
         import traceback
         with st.expander("traceback"):
             st.code(traceback.format_exc())

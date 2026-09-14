@@ -528,6 +528,11 @@ def _render_portfolio_result(result: dict):
     except Exception as e:
         st.warning(f"無法繪製 equity curve：`{e}`")
 
+    # ============ 2.5. 📅 年度績效（FY2020 整年 ~ FY2026 YTD） ============
+    st.divider()
+    st.markdown("#### 📅 年度績效（FY 整年 + FY2026 YTD）")
+    _render_yearly_performance(port, port_stats)
+
     # ============ 3. 🎯 最新持倉（含中文名稱） ============
     st.divider()
     st.markdown("#### 🎯 最新持倉（含中文名稱）")
@@ -653,6 +658,125 @@ def _render_portfolio_result(result: dict):
         if st.button("☁️ 推 cloud", key="port_push_btn", type="secondary",
                      help="推到 finlab cloud portfolio"):
             _push_to_cloud_ui(port, result['total_balance'], result['rebalance_safety_weight'])
+
+
+def _render_yearly_performance(port, port_stats: dict):
+    """顯示 FY 整年績效 + FY2026 YTD（含加權指數對照 + bar chart）"""
+    try:
+        return_table = port_stats.get('return_table', {})
+        if not return_table:
+            st.info("此 Portfolio 沒有 return_table（可能期間太短）")
+            return
+
+        # 用 port.creturn index 找出所有有資料的年度
+        creturn = port.creturn
+        if not hasattr(creturn, 'index'):
+            return
+        years_in_data = sorted({d.year for d in creturn.index})
+        # 跳過進場年（資料不完整），從 2020 開始
+        # 但如果從 2019 開始就留（用戶可自己看）
+        current_year = max(years_in_data)  # 2026
+
+        # 抓 Portfolio 年度報酬（從 return_table 的 YTD）
+        rows = []
+        for y in years_in_data:
+            year_data = return_table.get(str(y), {}) or return_table.get(y, {})
+            ytd = year_data.get('YTD')
+            if ytd is None:
+                # 自己從 creturn 算
+                year_cret = creturn[creturn.index.year == y]
+                if len(year_cret) > 1:
+                    ytd = (year_cret.iloc[-1] / year_cret.iloc[0]) - 1
+                else:
+                    continue
+            rows.append({'year': y, 'port_return': ytd})
+
+        # 抓加權指數年度報酬
+        try:
+            from finlab import data as _data
+            benchmark = _data.get('benchmark_return:發行量加權股價報酬指數').squeeze()
+            bench_index = pd.to_datetime(benchmark.index)
+            bench_aligned = benchmark.reindex(creturn.index).dropna()
+            # 算每年度 1/1 第一筆 到 12/31 最後一筆的累積報酬
+            for r in rows:
+                y = r['year']
+                year_mask = (bench_aligned.index >= f'{y}-01-01') & (bench_aligned.index <= f'{y}-12-31')
+                year_bench = bench_aligned[year_mask]
+                if len(year_bench) > 1:
+                    r['bench_return'] = (year_bench.iloc[-1] / year_bench.iloc[0]) - 1
+                else:
+                    r['bench_return'] = None
+        except Exception as e:
+            for r in rows:
+                r['bench_return'] = None
+
+        # 組裝 DataFrame
+        df_rows = []
+        for r in rows:
+            y = r['year']
+            label = f"FY{y}" if y < current_year else f"FY{y} (YTD)"
+            df_rows.append({
+                '年度': label,
+                'Portfolio': f"{r['port_return']*100:+.1f}%",
+                '加權指數': f"{r['bench_return']*100:+.1f}%" if r.get('bench_return') is not None else "—",
+                '超額報酬': f"{(r['port_return'] - (r['bench_return'] or 0))*100:+.1f}%" if r.get('bench_return') is not None else "—",
+            })
+
+        df = pd.DataFrame(df_rows)
+
+        # Bar chart：Portfolio vs 加權指數（grouped bar）
+        fig = go.Figure()
+        x_labels = df['年度'].tolist()
+        port_vals = [r['port_return']*100 for r in rows]
+        bench_vals = [(r.get('bench_return') or 0)*100 for r in rows]
+
+        fig.add_trace(go.Bar(
+            name='Portfolio',
+            x=x_labels, y=port_vals,
+            marker_color='#26a69a',
+            text=[f"+{v:.0f}%" if v >= 0 else f"{v:.0f}%" for v in port_vals],
+            textposition='outside',
+        ))
+        if any(r.get('bench_return') is not None for r in rows):
+            fig.add_trace(go.Bar(
+                name='加權指數',
+                x=x_labels, y=bench_vals,
+                marker_color='#90a4ae',
+                text=[f"+{v:.0f}%" if v >= 0 else f"{v:.0f}%" for v in bench_vals],
+                textposition='outside',
+            ))
+        fig.update_layout(
+            barmode='group',
+            yaxis_title='年度報酬 (%)',
+            height=380,
+            yaxis_tickformat='.0f',
+            xaxis_title='',
+            legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
+        )
+        st.plotly_chart(fig, width="stretch")
+
+        # 表格
+        st.dataframe(df, hide_index=True, width="stretch")
+
+        # 摘要
+        port_avg = sum(port_vals) / len(port_vals) if port_vals else 0
+        bench_avg = sum(b for b in bench_vals if b is not None) / len([b for b in bench_vals if b is not None]) if bench_vals else 0
+        full_years = [r for r in rows if r['year'] < current_year]
+        if full_years:
+            n_full = len(full_years)
+            port_full_avg = sum(r['port_return']*100 for r in full_years) / n_full
+            bench_full_avg = sum((r.get('bench_return') or 0)*100 for r in full_years) / n_full
+            st.caption(
+                f"📊 **{n_full} 個完整年度平均**：Portfolio **+{port_full_avg:.1f}%** vs "
+                f"加權指數 **+{bench_full_avg:.1f}%**（年化超額 +{port_full_avg - bench_full_avg:.1f}%）｜"
+                f"FY{current_year} (YTD)：Portfolio **+{port_vals[-1]:.1f}%** vs "
+                f"加權指數 **+{bench_vals[-1]:.1f}%**"
+            )
+    except Exception as e:
+        st.warning(f"無法顯示年度績效：`{e}`")
+        import traceback
+        with st.expander("traceback"):
+            st.code(traceback.format_exc())
 
 
 def _render_portfolio_holdings(port, total_balance: float, rebalance_safety_weight: float):

@@ -426,15 +426,16 @@ def _compose_portfolio_ui(preset_idx: int, total_balance: float, rebalance_safet
 
 
 def _render_portfolio_result(result: dict):
-    """顯示 Portfolio 結果 + 存資料版本按鈕"""
+    """顯示 Portfolio 結果（含 equity curve、最新持倉、trades、壓力測試、存/推按鈕）"""
+    port = result['port']
     port_stats = result['port_stats']
     strategy_stats = result['strategy_stats']
     preset = result['preset']
 
     st.divider()
-    st.markdown(f"### 📊 Portfolio 結果：{preset['name']}")
+    st.subheader(f"📊 Portfolio 結果：{preset['name']}")
 
-    # 5 個 metric
+    # ============ 1. 5+4 個 metric（跟預設 tab 同款） ============
     mc = st.columns(5)
     mc[0].metric("CAGR", f"{port_stats.get('cagr', 0)*100:+.1f}%")
     mc[1].metric("MDD", f"{port_stats.get('max_drawdown', 0)*100:.1f}%")
@@ -442,16 +443,50 @@ def _render_portfolio_result(result: dict):
     mc[3].metric("Sharpe (日)", f"{port_stats.get('daily_sharpe', 0):.2f}")
     mc[4].metric("Calmar", f"{port_stats.get('calmar', 0):.2f}")
 
-    # 額外 stats
     mc2 = st.columns(4)
-    mc2[0].metric("Total Return", f"{port_stats.get('total_return', 0):+.1f}%")  # finlab Portfolio 已是 % 形式，不是 decimal
+    mc2[0].metric("Total Return", f"{port_stats.get('total_return', 0):+.1f}%")  # finlab Portfolio 已是 % 形式
     mc2[1].metric("Win ratio", f"{port_stats.get('win_ratio', 0)*100:.1f}%")
     mc2[2].metric("年勝率", f"{port_stats.get('win_year_perc', 0)*100:.1f}%")
-    omega = ps.omega_score_vs_benchmark(result['port'])
+    omega = ps.omega_score_vs_benchmark(port)
     mc2[3].metric("Omega vs 加權指數", f"{omega:.3f}")
 
-    # 4 個獨立策略對比表
-    st.markdown("#### 4 個獨立策略表現")
+    # ============ 2. Equity curve（從 preset tab 抄的邏輯） ============
+    st.divider()
+    st.markdown("#### 📈 累計報酬曲線")
+    try:
+        creturn = port.creturn
+        if hasattr(creturn, 'index'):
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=creturn.index, y=creturn.values,
+                name='Portfolio 累計報酬', line=dict(color='#26a69a', width=2)
+            ))
+            # 加 benchmark
+            try:
+                from finlab import data as _data
+                benchmark = _data.get('benchmark_return:發行量加權股價報酬指數').squeeze()
+                bench_aligned = benchmark.reindex(creturn.index).dropna()
+                fig.add_trace(go.Scatter(
+                    x=bench_aligned.index, y=bench_aligned.values,
+                    name='加權指數', line=dict(color='#888', width=1, dash='dot')
+                ))
+            except Exception:
+                pass
+            fig.update_layout(height=400, hovermode='x unified')
+            st.plotly_chart(fig, width="stretch")
+        else:
+            st.dataframe(creturn.head(50))
+    except Exception as e:
+        st.warning(f"無法繪製 equity curve：`{e}`")
+
+    # ============ 3. 🎯 最新持倉（含中文名稱） ============
+    st.divider()
+    st.markdown("#### 🎯 最新持倉（含中文名稱）")
+    _render_portfolio_holdings(port, result['total_balance'], result['rebalance_safety_weight'])
+
+    # ============ 4. 4 個獨立策略對比表 ============
+    st.divider()
+    st.markdown("#### 📊 4 個獨立策略表現")
     rows = []
     for s in preset['strategies']:
         ist = strategy_stats[s['name']]
@@ -467,10 +502,62 @@ def _render_portfolio_result(result: dict):
         })
     st.dataframe(rows, hide_index=True, width="stretch")
 
-    # 存資料版本按鈕
+    # ============ 5. Trades table + CSV 下載 ============
     st.divider()
-    st.markdown("#### 💾 存成資料版本")
-    save_col1, save_col2 = st.columns([3, 1])
+    st.markdown("#### 📋 Portfolio 最近 30 筆交易")
+    try:
+        trades = port.trades.tail(30).copy()
+        st.dataframe(trades, hide_index=True, width="stretch")
+        csv = trades.to_csv(index=False).encode("utf-8")
+        from datetime import datetime
+        st.download_button(
+            "⬇️ 下載 Portfolio trades CSV",
+            data=csv,
+            file_name=f"portfolio_trades_{datetime.now().strftime('%Y%m%d')}.csv",
+            mime="text/csv",
+            key="port_trades_csv",
+        )
+    except Exception as e:
+        st.warning(f"無法取得 trades：`{e}`")
+
+    # ============ 6. Portfolio 蒙地卡羅壓力測試 ============
+    st.divider()
+    st.markdown("#### 🎲 Portfolio 蒙地卡羅壓力測試（bootstrap）")
+    iters = st.slider(
+        "蒙地卡羅迭代次數", 1000, 20000, 5000, step=1000,
+        key="port_mc_iters",
+    )
+    if st.button("🎲 跑 Portfolio 壓力測試", key="port_stress_btn", type="primary"):
+        progress = st.progress(0.0, text="Portfolio bootstrap 蒙地卡羅模擬中…")
+        result_mc = ps.monte_carlo_stress_test(port, iterations=iters)
+        progress.progress(1.0, text="完成")
+        if result_mc is None:
+            st.error("無法取得回測報酬數據")
+        else:
+            level_data = pd.DataFrame({
+                '風險等級': ['95.0%', '97.5%', '99.0%', '99.7% (3σ)'],
+                'Sortino': [result_mc['sortino_p95'], result_mc['sortino_p975'],
+                            result_mc['sortino_p99'], result_mc['sortino_p997']],
+                'Omega': [result_mc['omega_p95'], result_mc['omega_p975'],
+                           result_mc['omega_p99'], result_mc['omega_p997']],
+                'Sortino 累計衰減': [
+                    '0% (基準)',
+                    f"{(result_mc['sortino_p95']-result_mc['sortino_p975'])/result_mc['sortino_p95']*100:+.1f}%",
+                    f"{(result_mc['sortino_p95']-result_mc['sortino_p99'])/result_mc['sortino_p95']*100:+.1f}%",
+                    f"{(result_mc['sortino_p95']-result_mc['sortino_p997'])/result_mc['sortino_p95']*100:+.1f}%",
+                ],
+            })
+            st.dataframe(level_data, hide_index=True, width="stretch")
+            st.caption(
+                f"基準 Sortino（中位數）: {result_mc['sortino_baseline']:.2f}　"
+                f"基準 Omega（中位數）: {result_mc['omega_baseline']:.2f}　"
+                f"迭代: {result_mc['n_iterations']:,} 次"
+            )
+
+    # ============ 7. 存資料版本 + 推到 finlab cloud ============
+    st.divider()
+    st.markdown("#### 💾 存成資料版本 / 推到 finlab cloud")
+    save_col1, save_col2, save_col3 = st.columns([3, 1, 1])
     with save_col1:
         version_name = st.text_input(
             "Version name",
@@ -481,7 +568,7 @@ def _render_portfolio_result(result: dict):
     with save_col2:
         st.write("")  # 對齊
         st.write("")
-        if st.button("💾 存到 SQLite + JSON", key="port_save_btn"):
+        if st.button("💾 存版本", key="port_save_btn", type="secondary"):
             from datetime import datetime
             ver = version_name.strip() or f"v{preset['name'].split()[1]}_{datetime.now().strftime('%Y%m%d_%H%M')}"
             data_version = {
@@ -499,20 +586,117 @@ def _render_portfolio_result(result: dict):
                 ]},
                 'omega_vs_market': omega,
                 'sim_params': {
-                    'period': '2019-2026-09-14',
-                    'position_limit': '1/3',
-                    'fee_ratio': 1.425/1000*0.3,
-                    'nstocks_limit': 5,
+                    'period': '2019-2026-09-14', 'position_limit': '1/3',
+                    'fee_ratio': 1.425/1000*0.3, 'nstocks_limit': 5,
                     'trade_at_price': 'open',
                 },
             }
             try:
                 json_path = ps.save_portfolio_data_version(ver, data_version)
                 st.success(f"✅ 已存資料版本 **{ver}**")
-                st.caption(f"📊 SQLite: `~/.openclaw/ma_indicator_data/portfolio_versions.db`")
-                st.caption(f"📄 JSON: `{json_path}`")
+                st.caption(f"📊 `~/.openclaw/ma_indicator_data/portfolio_versions.db`")
+                st.caption(f"📄 `{json_path}`")
             except Exception as e:
                 st.error(f"❌ 存失敗：`{e}`")
+    with save_col3:
+        st.write("")  # 對齊
+        st.write("")
+        if st.button("☁️ 推 cloud", key="port_push_btn", type="secondary",
+                     help="推到 finlab cloud portfolio"):
+            _push_to_cloud_ui(port, result['total_balance'], result['rebalance_safety_weight'])
+
+
+def _render_portfolio_holdings(port, total_balance: float, rebalance_safety_weight: float):
+    """從 PortfolioSyncManager 取最新持倉 + 中文名稱"""
+    from finlab.portfolio import PortfolioSyncManager
+
+    with st.spinner("從 finlab PortfolioSyncManager 取最新持倉…"):
+        try:
+            pm = PortfolioSyncManager()
+            pm.update(port, total_balance=total_balance, rebalance_safety_weight=rebalance_safety_weight)
+        except Exception as e:
+            st.warning(f"無法更新 pm：`{e}`")
+            pm = None
+
+    if pm is None:
+        return
+
+    # 從 str(pm) parse 持倉表（finlab PortfolioSyncManager 沒有公開 holdings API）
+    holdings = []
+    for line in str(pm).split('\n'):
+        line = line.strip()
+        parts = line.split()
+        if not parts or not parts[0].isdigit() or len(parts[0]) != 4:
+            continue
+        try:
+            stock_id = parts[0]
+            quantity = float(parts[1])
+            price = float(parts[2])
+            weight = float(parts[3])
+            close_price = float(parts[4])
+            volume = float(parts[5])
+            strategy = ' '.join(parts[6:-1]) if len(parts) > 7 else (parts[6] if len(parts) > 6 else '?')
+            type_ = parts[-1] if parts else '?'
+            holdings.append({
+                'stock_id': stock_id,
+                'name': '',
+                'quantity': int(quantity),
+                'price': price,
+                'value': quantity * price,
+                'weight_pct': weight * 100,
+                'strategy': strategy,
+                'type': type_,
+            })
+        except (ValueError, IndexError):
+            pass
+
+    if not holdings:
+        st.info("目前無持倉（pm 還沒推送或 sync 失敗）")
+        return
+
+    # 加中文名稱
+    name_map = _cached_security_names()
+    for h in holdings:
+        h['name'] = name_map.get(h['stock_id'], '?')
+
+    # 聚合（同檔被多策略持有）
+    seen = {}
+    for h in holdings:
+        sid = h['stock_id']
+        if sid not in seen:
+            seen[sid] = {
+                'stock_id': sid,
+                '名稱': h['name'],
+                '數量': h['quantity'],
+                '現價': h['price'],
+                '市值(TWD)': h['value'],
+                '權重(%)': h['weight_pct'],
+                '來源策略': h['strategy'],
+            }
+        else:
+            seen[sid]['來源策略'] += f", {h['strategy']}"
+
+    df = pd.DataFrame(list(seen.values())).sort_values('權重(%)', ascending=False)
+    st.dataframe(df, hide_index=True, width="stretch")
+
+    total_value = sum(h['value'] for h in holdings)
+    total_weight = sum(h['weight_pct'] for h in holdings)
+    n_unique = len(seen)
+    st.caption(
+        f"📊 共 **{n_unique}** 檔個股｜總市值 TWD {total_value:,.0f}（依報價 × 數量估算）｜"
+        f"總權重 {total_weight:.1f}%（4 策略可重疊持倉）"
+    )
+
+
+@st.cache_data(ttl=3600, show_spinner="撈台股中文簡稱…")
+def _cached_security_names() -> dict:
+    """stock_id -> 中文名稱（從 security_categories 撈）"""
+    try:
+        from data_fetcher import get_all_securities
+        secs = get_all_securities()
+        return dict(zip(secs['stock_id'].astype(str), secs['name']))
+    except Exception:
+        return {}
 
 
 def _push_to_cloud_ui(port, total_balance: float, rebalance_safety_weight: float):

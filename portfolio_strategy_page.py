@@ -150,37 +150,70 @@ def render_portfolio_page():
     # ----- Tab 3: Portfolio 4 策略組合 -----
     with tab_portfolio:
         st.subheader("💼 Portfolio：4 策略組合（沿用 notebook cell 7-8）")
-        st.caption("把幾個歷史 best 策略等權重 (1/4) 組合成 Portfolio，用 finlab.portfolio 顯示組合表現")
+        st.caption("選預設組合 → 跑 4 個 sim() → 組合成 Portfolio → 顯示 stats → 可選存成資料版本 / 推到 finlab cloud")
 
-        port_cols = st.columns(2)
-        with port_cols[0]:
-            st.markdown("預設組合 1（notebook cell 7）：")
-            st.code("""
-port = Portfolio({
-    '基因比對_營收KD值高_MDD低': (report, 1/4),
-    '策略2_Finlab': (report2, 1/4),
-    '均線型態_成交量成長_十日線以上': (report11, 1/4),
-    '策略10_Finlab': (report10, 1/4),
-})
-port.display()
-            """, language='python')
-        with port_cols[1]:
-            st.markdown("預設組合 2（notebook cell 8）：")
-            st.code("""
-port = Portfolio({
-    '基因比對_營收KD值高_MDD低': (report, 1/4),
-    '策略2_Finlab': (report2, 1/4),
-    '策略4_Finlab': (report4, 1/4),
-    '策略8_Finlab': (report8, 1/4),
-})
-port.display()
-            """, language='python')
-
-        st.info(
-            "💡 Portfolio 頁面需要先跑 4 個獨立 sim() → 拿到 4 個 report 才能組合成 Portfolio。"
-            "建議先在『自訂組合』tab 跑 4 次不同條件組合 → 把結果餵給 Portfolio。"
-            "完整實作留待下一版。"
+        # 1) 選 preset
+        preset_names = [p['name'] for p in ps.PORTFOLIO_PRESETS]
+        preset_idx = st.selectbox(
+            "選擇 Portfolio 組合",
+            range(len(preset_names)),
+            format_func=lambda i: preset_names[i],
+            key="portfolio_preset_select",
         )
+        preset = ps.PORTFOLIO_PRESETS[preset_idx]
+
+        with st.expander("📋 組合內容", expanded=False):
+            st.caption(preset['description'])
+            for s in preset['strategies']:
+                st.markdown(
+                    f"- **{s['name']}** (cell {s['cell']}, {len(s['conditions'])} 條件, weight {s['weight']*100:.0f}%)"
+                )
+                st.caption(f"  條件：`{' & '.join(s['conditions'])}`")
+
+        # 2) 進階參數
+        adv = st.columns(3)
+        with adv[0]:
+            total_balance = st.number_input(
+                "總資金 (TWD)", min_value=100_000, max_value=100_000_000,
+                value=12_000_000, step=1_000_000,
+                help="推到 finlab cloud 時的總倉位大小",
+                key="port_total_balance",
+            )
+        with adv[1]:
+            rebalance_safety_weight = st.slider(
+                "Rebalance 安全權重 (0=積極)", 0.0, 0.5, 0.0, step=0.05,
+                key="port_rebalance",
+            )
+        with adv[2]:
+            save_version_name = st.text_input(
+                "資料版本名稱", value=f"v{preset_idx+1}_comb{preset_idx+1}",
+                key="port_version_name",
+                help="存 SQLite / JSON 時用的 version id",
+            )
+
+        st.divider()
+
+        # 3) 組 Portfolio 按鈕
+        if st.button("🚀 組 Portfolio（跑 4 個 sim() + 組合）", type="primary", key="port_compose"):
+            _compose_portfolio_ui(preset_idx, total_balance, rebalance_safety_weight)
+
+        # 4) 顯示之前跑的結果（從 session_state）
+        if st.session_state.get('portfolio_result'):
+            _render_portfolio_result(st.session_state['portfolio_result'])
+
+        # 5) 推 finlab cloud 按鈕
+        if st.session_state.get('portfolio_result') and st.session_state['portfolio_result'].get('port'):
+            st.divider()
+            st.markdown("### ☁️ 推到 finlab cloud")
+            st.caption(
+                "⚠️ **會直接同步到你的 finlab 帳號 portfolio**。確認要推再按。"
+            )
+            if st.button("☁️ 推到 finlab cloud (PortfolioSyncManager.to_cloud)", type="secondary", key="port_push_cloud"):
+                _push_to_cloud_ui(
+                    st.session_state['portfolio_result']['port'],
+                    total_balance,
+                    rebalance_safety_weight,
+                )
 
     # ----- Tab 4: 蒙地卡羅壓力測試 -----
     with tab_stress:
@@ -346,3 +379,163 @@ def _run_backtest_ui(active_conditions, prefix="", nstocks_limit=5, position_lim
         st.warning(f"無法取得 trades：`{e}`")
 
     st.success("✅ 回測完成！可去『蒙地卡羅壓力』tab 看壓力測試")
+
+
+# ============================================================
+# Portfolio tab 用的 helper
+# ============================================================
+def _compose_portfolio_ui(preset_idx: int, total_balance: float, rebalance_safety_weight: float):
+    """跑 4 個 sim() + 組 Portfolio + 存 session_state"""
+    preset = ps.PORTFOLIO_PRESETS[preset_idx]
+    progress = st.progress(0.0, text="載入特徵…")
+
+    try:
+        features = _cached_load_features()
+    except Exception as e:
+        progress.empty()
+        st.error(f"❌ 載入 finlab 資料失敗：`{e}`")
+        return
+
+    progress.progress(0.1, text=f"跑 {len(preset['strategies'])} 個 sim()...")
+
+    def cb(i, total, msg):
+        if i is not None and total:
+            pct = 0.1 + 0.85 * (i + 1) / total
+            progress.progress(min(pct, 0.95), text=f"({i+1}/{total}) {msg}")
+
+    try:
+        result = ps.compose_portfolio(preset, features, progress_callback=cb)
+    except Exception as e:
+        progress.empty()
+        st.error(f"❌ 組 Portfolio 失敗：`{type(e).__name__}: {e}`")
+        import traceback
+        with st.expander("traceback"):
+            st.code(traceback.format_exc())
+        return
+
+    progress.progress(1.0, text="✅ Portfolio 組成")
+
+    # 存 session_state
+    st.session_state['portfolio_result'] = {
+        'preset_name': preset['name'],
+        'preset_idx': preset_idx,
+        'preset': preset,
+        'port': result['port'],
+        'strategy_stats': result['strategy_stats'],
+        'port_stats': result['port_stats'],
+        'total_balance': total_balance,
+        'rebalance_safety_weight': rebalance_safety_weight,
+    }
+    st.success(f"✅ Portfolio 組成完成（{len(preset['strategies'])} 策略）")
+
+
+def _render_portfolio_result(result: dict):
+    """顯示 Portfolio 結果 + 存資料版本按鈕"""
+    port_stats = result['port_stats']
+    strategy_stats = result['strategy_stats']
+    preset = result['preset']
+
+    st.divider()
+    st.markdown(f"### 📊 Portfolio 結果：{preset['name']}")
+
+    # 5 個 metric
+    mc = st.columns(5)
+    mc[0].metric("CAGR", f"{port_stats.get('cagr', 0)*100:+.1f}%")
+    mc[1].metric("MDD", f"{port_stats.get('max_drawdown', 0)*100:.1f}%")
+    mc[2].metric("Sortino (日)", f"{port_stats.get('daily_sortino', 0):.2f}")
+    mc[3].metric("Sharpe (日)", f"{port_stats.get('daily_sharpe', 0):.2f}")
+    mc[4].metric("Calmar", f"{port_stats.get('calmar', 0):.2f}")
+
+    # 額外 stats
+    mc2 = st.columns(4)
+    mc2[0].metric("Total Return", f"{port_stats.get('total_return', 0)*100:+.1f}%")
+    mc2[1].metric("Win ratio", f"{port_stats.get('win_ratio', 0)*100:.1f}%")
+    mc2[2].metric("年勝率", f"{port_stats.get('win_year_perc', 0)*100:.1f}%")
+    omega = ps.omega_score_vs_benchmark(result['port'])
+    mc2[3].metric("Omega vs 加權指數", f"{omega:.3f}")
+
+    # 4 個獨立策略對比表
+    st.markdown("#### 4 個獨立策略表現")
+    rows = []
+    for s in preset['strategies']:
+        ist = strategy_stats[s['name']]
+        rows.append({
+            '策略': s['name'],
+            'cell': s.get('cell', '?'),
+            '條件數': len(s['conditions']),
+            'weight': f"{s.get('weight', 0.25)*100:.0f}%",
+            'CAGR': f"{ist['cagr']*100:+.1f}%",
+            'MDD': f"{ist['max_drawdown']*100:.1f}%",
+            'Sortino': f"{ist['daily_sortino']:.2f}",
+            'Sharpe': f"{ist['daily_sharpe']:.2f}",
+        })
+    st.dataframe(rows, hide_index=True, width="stretch")
+
+    # 存資料版本按鈕
+    st.divider()
+    st.markdown("#### 💾 存成資料版本")
+    save_col1, save_col2 = st.columns([3, 1])
+    with save_col1:
+        version_name = st.text_input(
+            "Version name",
+            value="",
+            placeholder="留空自動產生 (e.g. v2_comb1_2026-09-15)",
+            key="port_save_version",
+        )
+    with save_col2:
+        st.write("")  # 對齊
+        st.write("")
+        if st.button("💾 存到 SQLite + JSON", key="port_save_btn"):
+            from datetime import datetime
+            ver = version_name.strip() or f"v{preset['name'].split()[1]}_{datetime.now().strftime('%Y%m%d_%H%M')}"
+            data_version = {
+                'version': ver,
+                'date': datetime.now().strftime('%Y-%m-%d'),
+                'finlab_version': '2.0.16',
+                'composition': preset['description'],
+                'strategies': [{'name': s['name'], 'weight': s.get('weight', 0.25),
+                                'cell': s.get('cell', '?'),
+                                'conditions': s['conditions']} for s in preset['strategies']],
+                'individual_stats': strategy_stats,
+                'portfolio_stats': {k: port_stats.get(k) for k in [
+                    'cagr', 'total_return', 'max_drawdown', 'daily_sortino',
+                    'daily_sharpe', 'calmar', 'win_ratio', 'win_year_perc'
+                ]},
+                'omega_vs_market': omega,
+                'sim_params': {
+                    'period': '2019-2026-09-14',
+                    'position_limit': '1/3',
+                    'fee_ratio': 1.425/1000*0.3,
+                    'nstocks_limit': 5,
+                    'trade_at_price': 'open',
+                },
+            }
+            try:
+                json_path = ps.save_portfolio_data_version(ver, data_version)
+                st.success(f"✅ 已存資料版本 **{ver}**")
+                st.caption(f"📊 SQLite: `~/.openclaw/ma_indicator_data/portfolio_versions.db`")
+                st.caption(f"📄 JSON: `{json_path}`")
+            except Exception as e:
+                st.error(f"❌ 存失敗：`{e}`")
+
+
+def _push_to_cloud_ui(port, total_balance: float, rebalance_safety_weight: float):
+    """推到 finlab cloud"""
+    progress = st.progress(0.0, text="PortfolioSyncManager.update() ...")
+    try:
+        from finlab.portfolio import PortfolioSyncManager
+        pm = PortfolioSyncManager()
+        progress.progress(0.4, text=f"pm.update(port, total_balance={total_balance:,}, rebalance_safety_weight={rebalance_safety_weight})")
+        pm.update(port, total_balance=total_balance, rebalance_safety_weight=rebalance_safety_weight)
+        progress.progress(0.7, text="pm.to_cloud() ...")
+        pm.to_cloud()
+        progress.progress(1.0, text="✅ 已推到 finlab cloud")
+        st.success(f"✅ 已推 Portfolio 到 finlab cloud（總資金 ${total_balance:,:,}）")
+        with st.expander("📋 PortfolioSyncManager 內容", expanded=False):
+            st.text(str(pm))
+    except Exception as e:
+        progress.empty()
+        st.error(f"❌ 推 cloud 失敗：`{type(e).__name__}: {e}`")
+        import traceback
+        with st.expander("traceback"):
+            st.code(traceback.format_exc())

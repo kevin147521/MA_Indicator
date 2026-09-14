@@ -23,8 +23,11 @@ from __future__ import annotations
 import warnings
 warnings.simplefilter(action='ignore', category=FutureWarning)
 
+import json
 import numpy as np
 import pandas as pd
+
+from pathlib import Path
 
 from finlab import data
 from finlab.backtest import sim
@@ -311,6 +314,124 @@ PRESET_COMBOS = [
         'source': 'notebook cell 17 註解',
     },
 ]
+
+
+# ============================================================
+# 2.5. Portfolio 預設組合（notebook cell 7-8 的 4 策略 1/4 權重）
+# ============================================================
+PORTFOLIO_PRESETS = [
+    {
+        'name': '組合 1 (notebook cell 7)',
+        'description': '基因比對_營收KD值高_MDD低 + 策略2_Finlab + 均線型態_成交量成長_十日線以上 + 策略10_Finlab',
+        'strategies': [
+            {'name': '基因比對_營收KD值高_MDD低',     'conditions': ['cond2', 'cond6', 'cond7', 'cond8', 'cond9', 'cond12', 'cond13', 'cond15', 'cond16', 'cond19', 'cond22', 'cond25'], 'cell': '17', 'weight': 0.25},
+            {'name': '策略2_Finlab',                  'conditions': ['cond1', 'cond4', 'cond24', 'cond25', 'cond31'],                                                                'cell': '2',  'weight': 0.25},
+            {'name': '均線型態_成交量成長_十日線以上', 'conditions': ['cond1', 'cond2', 'cond6', 'cond8', 'cond13', 'cond19', 'cond26', 'cond30', 'cond32'],                                'cell': '6',  'weight': 0.25},
+            {'name': '策略10_Finlab',                 'conditions': ['cond1', 'cond8', 'cond30', 'cond32'],                                                                          'cell': '5',  'weight': 0.25},
+        ],
+    },
+    {
+        'name': '組合 2 (notebook cell 8)',
+        'description': '基因比對_營收KD值高_MDD低 + 策略2_Finlab + 策略4_Finlab + 策略8_Finlab',
+        'strategies': [
+            {'name': '基因比對_營收KD值高_MDD低', 'conditions': ['cond2', 'cond6', 'cond7', 'cond8', 'cond9', 'cond12', 'cond13', 'cond15', 'cond16', 'cond19', 'cond22', 'cond25'], 'cell': '17', 'weight': 0.25},
+            {'name': '策略2_Finlab',              'conditions': ['cond1', 'cond4', 'cond24', 'cond25', 'cond31'],                                                                'cell': '2',  'weight': 0.25},
+            {'name': '策略4_Finlab',              'conditions': ['cond1', 'cond4', 'cond28'],                                                                                      'cell': '3',  'weight': 0.25},
+            {'name': '策略8_Finlab',              'conditions': ['cond1', 'cond4', 'cond24', 'cond25', 'cond31'],                                                                'cell': '4',  'weight': 0.25},
+        ],
+    },
+]
+
+
+def save_portfolio_data_version(version: str, data_version: dict) -> Path:
+    """存資料版本到 V2 SQLite + JSON"""
+    import sqlite3
+    DB_PATH = Path.home() / ".openclaw" / "ma_indicator_data" / "portfolio_versions.db"
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(DB_PATH))
+    c = conn.cursor()
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS portfolio_versions (
+        version            TEXT PRIMARY KEY,
+        date               TEXT NOT NULL,
+        composition        TEXT,
+        finlab_version     TEXT,
+        raw_json           TEXT NOT NULL,
+        n_strategies       INTEGER,
+        portfolio_cagr     REAL,
+        portfolio_mdd      REAL,
+        portfolio_sortino  REAL,
+        portfolio_sharpe   REAL,
+        portfolio_calmar   REAL,
+        omega_vs_market    REAL,
+        created_at         TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+    c.execute("""
+    INSERT OR REPLACE INTO portfolio_versions (
+        version, date, composition, finlab_version, raw_json,
+        n_strategies, portfolio_cagr, portfolio_mdd, portfolio_sortino,
+        portfolio_sharpe, portfolio_calmar, omega_vs_market
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        version, data_version['date'], data_version['composition'],
+        data_version.get('finlab_version', '2.0.16'),
+        json.dumps(data_version, ensure_ascii=False, indent=2),
+        len(data_version['strategies']),
+        data_version['portfolio_stats'].get('cagr'),
+        data_version['portfolio_stats'].get('max_drawdown'),
+        data_version['portfolio_stats'].get('daily_sortino'),
+        data_version['portfolio_stats'].get('daily_sharpe'),
+        data_version['portfolio_stats'].get('calmar'),
+        data_version.get('omega_vs_market'),
+    ))
+    conn.commit()
+    conn.close()
+
+    # 同步存 JSON
+    json_dir = Path("/Users/kevin/Desktop/排程運算/MA_Indicator/data/portfolio_versions")
+    json_dir.mkdir(parents=True, exist_ok=True)
+    json_path = json_dir / f"{version}.json"
+    with open(json_path, 'w', encoding='utf-8') as f:
+        json.dump(data_version, f, ensure_ascii=False, indent=2)
+    return json_path
+
+
+def compose_portfolio(preset: dict, features: dict, progress_callback=None):
+    """跑 preset 內每個策略 + 組合成 Portfolio"""
+    from finlab.portfolio import Portfolio
+
+    strategy_reports = {}
+    strategy_stats = {}
+    for i, s in enumerate(preset['strategies']):
+        if progress_callback:
+            progress_callback(i, len(preset['strategies']), f"跑 {s['name']} ({len(s['conditions'])} 條件)")
+        report = run_backtest(s['conditions'], features, progress_callback=None)
+        stats = extract_report_stats(report)
+        strategy_reports[s['name']] = report
+        strategy_stats[s['name']] = {
+            'cagr': stats['annual_return'], 'total_return': stats['total_return'],
+            'max_drawdown': stats['max_drawdown'], 'daily_sortino': stats['daily_sortino'],
+            'daily_sharpe': stats['daily_sharpe'], 'calmar': stats['calmar'],
+            'win_ratio': stats['win_ratio'],
+            'cell': s.get('cell', '?'), 'n_conditions': len(s['conditions']),
+            'conditions': s['conditions'],
+        }
+
+    if progress_callback:
+        progress_callback(len(preset['strategies']), len(preset['strategies']), '組合 Portfolio...')
+
+    port = Portfolio({
+        s['name']: (strategy_reports[s['name']], s.get('weight', 1.0/len(preset['strategies'])))
+        for s in preset['strategies']
+    })
+    port_stats = port.get_stats()
+
+    return {
+        'port': port,
+        'strategy_stats': strategy_stats,
+        'port_stats': port_stats,
+    }
 
 
 # ============================================================

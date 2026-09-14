@@ -753,13 +753,8 @@ def _render_yearly_performance(port, port_stats: dict):
             xaxis_title='',
             legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
         )
-        # 🔑 Plotly click event → streamlit rerun → 從 event 取點擊的年份
-        event = st.plotly_chart(
-            fig,
-            on_select="rerun",
-            key="yearly_bar_chart",
-            selection_mode="points",
-        )
+        # 純視覺 bar chart（Plotly click event 在 streamlit 1.58 不可靠，所以用下方 st.pills 做互動）
+        st.plotly_chart(fig, width="stretch")
 
         # 表格
         st.dataframe(df, hide_index=True, width="stretch")
@@ -779,39 +774,34 @@ def _render_yearly_performance(port, port_stats: dict):
                 f"加權指數 **+{bench_vals[-1]:.1f}%**"
             )
 
-        # ============ 月度績效 drill-down（點擊年份或下拉選單） ============
-        st.markdown("##### 📆 月度績效（點上方 bar 或選年份）")
+        # ============ 月度績效 drill-down（st.pills 互動切年份） ============
+        # ⚠️ Plotly click event 在 streamlit 1.58 不可靠（即使 JS dispatch plotly_click 也不觸發 rerun），
+        #    所以改用 streamlit 原生 st.pills（segmented control）做互動。
+        st.markdown("##### 📆 月度績效（點選下面年份）")
 
-        # 從 click event 拿年份（streamlit 1.58 的 PlotlyPoint 是 dict，不是 object）
-        clicked_label = None
-        try:
-            if event and hasattr(event, 'selection') and event.selection and event.selection.points:
-                pt = event.selection.points[0]
-                if isinstance(pt, dict):
-                    clicked_label = pt.get('x')
-                else:
-                    clicked_label = getattr(pt, 'x', None)
-        except (AttributeError, IndexError, KeyError, TypeError):
-            clicked_label = None
+        # 預設選第一個完整年度（跳過 2019 進場年不完整）
+        default_year_idx = 0
+        for i, lbl in enumerate(x_labels):
+            if "YTD" not in lbl and int(lbl.replace("FY", "")) >= 2020:
+                default_year_idx = i
+                break
 
-        # Dropdown 當備援（給 click 失效或用戶想直接選的情境）
-        default_idx = 0
-        if clicked_label and clicked_label in x_labels:
-            default_idx = x_labels.index(clicked_label)
-        selected_label = st.selectbox(
-            "查看年度",
+        # st.pills：streamlit 原生 segmented control，點選一定觸發 rerun
+        selected_label = st.pills(
+            "選擇年份看月度績效",
             options=x_labels,
-            index=default_idx,
-            key="monthly_year_select",
-            help="💡 也可以點上方 bar chart 切換",
+            default=x_labels[default_year_idx],
+            key="monthly_year_pills",
+            label_visibility="collapsed",
         )
 
         # 解析年份（"FY2026 (YTD)" → 2026）
         import re as _re
-        m = _re.match(r"FY(\d{4})", selected_label)
-        if m:
-            selected_year = int(m.group(1))
-            _render_monthly_breakdown(port_stats, selected_year, selected_label)
+        if selected_label:
+            m = _re.match(r"FY(\d{4})", selected_label)
+            if m:
+                selected_year = int(m.group(1))
+                _render_monthly_breakdown(port_stats, selected_year, selected_label)
     except Exception as e:
         st.warning(f"無法顯示年度績效：`{e}`")
         import traceback

@@ -450,30 +450,79 @@ def _render_portfolio_result(result: dict):
     omega = ps.omega_score_vs_benchmark(port)
     mc2[3].metric("Omega vs 加權指數", f"{omega:.3f}")
 
-    # ============ 2. Equity curve（從 preset tab 抄的邏輯） ============
+    # ============ 2. Equity curve（從 preset tab 抄的邏輯，但修 scale） ============
+    # ⚠️ finlab Portfolio.creturn 是「倍數」scale（從 1.0 開始，總報酬 196% → 199.7）
+    #    而 benchmark 是「金額」scale（從 10000 點開始），
+    #    直接 plot 在同一個 y 軸會把 Portfolio 線壓扁到接近 0。
+    #    解法：兩個都按「起始 1000 萬 TWD」標準化到金額 scale 對照。
     st.divider()
-    st.markdown("#### 📈 累計報酬曲線")
+    st.markdown("#### 📈 累計報酬曲線（起始 1000 萬 TWD）")
     try:
-        creturn = port.creturn
+        creturn = port.creturn  # 倍數 scale，1.0 → 199.7
         if hasattr(creturn, 'index'):
+            INITIAL_CAPITAL = 10_000_000  # 1000 萬 TWD 起始
+            port_amt = (creturn / creturn.iloc[0]) * INITIAL_CAPITAL
+
             fig = go.Figure()
             fig.add_trace(go.Scatter(
-                x=creturn.index, y=creturn.values,
-                name='Portfolio 累計報酬', line=dict(color='#26a69a', width=2)
+                x=port_amt.index, y=port_amt.values,
+                name=f'Portfolio（{INITIAL_CAPITAL/1e6:.0f}M 起始）',
+                line=dict(color='#26a69a', width=2),
+                hovertemplate='日期：%{x|%Y-%m-%d}<br>市值：%{y:,.0f}<br>倍數：%{customdata:.2f}x<extra></extra>',
+                customdata=port_amt.values / INITIAL_CAPITAL,
             ))
-            # 加 benchmark
+            # 加權指數也標準化到同樣起始金額
             try:
                 from finlab import data as _data
                 benchmark = _data.get('benchmark_return:發行量加權股價報酬指數').squeeze()
-                bench_aligned = benchmark.reindex(creturn.index).dropna()
+                bench_aligned = benchmark.reindex(port_amt.index).dropna()
+                bench_amt = (bench_aligned / bench_aligned.iloc[0]) * INITIAL_CAPITAL
                 fig.add_trace(go.Scatter(
-                    x=bench_aligned.index, y=bench_aligned.values,
-                    name='加權指數', line=dict(color='#888', width=1, dash='dot')
+                    x=bench_amt.index, y=bench_amt.values,
+                    name=f'加權指數（同樣 {INITIAL_CAPITAL/1e6:.0f}M 起始）',
+                    line=dict(color='#888', width=1, dash='dot'),
+                    hovertemplate='日期：%{x|%Y-%m-%d}<br>市值：%{y:,.0f}<extra></extra>',
                 ))
+                # 標註期末值
+                port_final = port_amt.iloc[-1]
+                bench_final = bench_amt.iloc[-1]
+                port_pct = (port_final / INITIAL_CAPITAL - 1) * 100
+                bench_pct = (bench_final / INITIAL_CAPITAL - 1) * 100
+                fig.add_annotation(
+                    x=port_amt.index[-1], y=port_final,
+                    text=f"Portfolio +{port_pct:.0f}%",
+                    showarrow=True, arrowhead=2, ax=-50, ay=-20,
+                    font=dict(color='#26a69a', size=12),
+                )
+                fig.add_annotation(
+                    x=bench_amt.index[-1], y=bench_final,
+                    text=f"加權 +{bench_pct:.0f}%",
+                    showarrow=True, arrowhead=2, ax=-50, ay=20,
+                    font=dict(color='#888', size=12),
+                )
             except Exception:
                 pass
-            fig.update_layout(height=400, hovermode='x unified')
+            fig.update_layout(
+                height=450,
+                hovermode='x unified',
+                yaxis_title='市值 (TWD)',
+                yaxis_tickformat=',',
+                xaxis_title='日期',
+                legend=dict(yanchor='top', y=0.99, xanchor='left', x=0.01),
+            )
             st.plotly_chart(fig, width="stretch")
+
+            # 額外摘要
+            port_final = (port_amt.iloc[-1] / INITIAL_CAPITAL - 1) * 100
+            try:
+                bench_final_pct = (bench_amt.iloc[-1] / INITIAL_CAPITAL - 1) * 100
+                st.caption(
+                    f"📊 期末：Portfolio **+{port_final:.1f}%** vs 加權指數 **+{bench_final_pct:.1f}%** "
+                    f"（{port_final - bench_final_pct:+.1f}% 超額報酬）｜"
+                    f"起始 1000 萬 → Portfolio 期末 {port_amt.iloc[-1]:,.0f} TWD"
+                )
+            except Exception:
+                pass
         else:
             st.dataframe(creturn.head(50))
     except Exception as e:

@@ -782,10 +782,17 @@ def _render_yearly_performance(port, port_stats: dict):
         # ============ 月度績效 drill-down（點擊年份或下拉選單） ============
         st.markdown("##### 📆 月度績效（點上方 bar 或選年份）")
 
-        # 從 click event 拿年份
+        # 從 click event 拿年份（streamlit 1.58 的 PlotlyPoint 是 dict，不是 object）
         clicked_label = None
-        if event and hasattr(event, 'selection') and event.selection and event.selection.points:
-            clicked_label = event.selection.points[0].x
+        try:
+            if event and hasattr(event, 'selection') and event.selection and event.selection.points:
+                pt = event.selection.points[0]
+                if isinstance(pt, dict):
+                    clicked_label = pt.get('x')
+                else:
+                    clicked_label = getattr(pt, 'x', None)
+        except (AttributeError, IndexError, KeyError, TypeError):
+            clicked_label = None
 
         # Dropdown 當備援（給 click 失效或用戶想直接選的情境）
         default_idx = 0

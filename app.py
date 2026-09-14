@@ -46,6 +46,7 @@ from barchart_engine import (
     RISING_COLOR,
     FALLING_COLOR,
 )
+from portfolio_strategy_page import render_portfolio_page
 
 
 # ============================================================
@@ -99,7 +100,7 @@ with st.sidebar:
     st.header("📑 頁面")
     page = st.radio(
         "選擇功能",
-        ["📈 均線預測", "🗺️ 市值漲跌地圖", "📊 主動 ETF 持股", "📊 被動 ETF 追蹤", "🔍 均線收復", "🧪 跌破站回回測", "💰 融資維持率", "🔄 資料更新"],
+        ["📈 均線預測", "🗺️ 市值漲跌地圖", "📊 主動 ETF 持股", "📊 被動 ETF 追蹤", "🔍 均線收復", "🧪 跌破站回回測", "💰 融資維持率", "🧬 基因策略組合", "🔄 資料更新"],
         label_visibility="collapsed",
         key="page_selector",
     )
@@ -575,6 +576,14 @@ def render_passive_etf_page():
 
 if page == "📊 被動 ETF 追蹤":
     render_passive_etf_page()
+    st.stop()
+
+
+# ============================================================
+# 基因策略組合頁面（從 Finlab組合策略_20260226.ipynb 抽出）
+# ============================================================
+if page == "🧬 基因策略組合":
+    render_portfolio_page()
     st.stop()
 
 

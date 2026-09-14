@@ -448,7 +448,7 @@ def _render_portfolio_result(result: dict):
 
     # 額外 stats
     mc2 = st.columns(4)
-    mc2[0].metric("Total Return", f"{port_stats.get('total_return', 0)*100:+.1f}%")
+    mc2[0].metric("Total Return", f"{port_stats.get('total_return', 0):+.1f}%")  # finlab Portfolio 已是 % 形式，不是 decimal
     mc2[1].metric("Win ratio", f"{port_stats.get('win_ratio', 0)*100:.1f}%")
     mc2[2].metric("年勝率", f"{port_stats.get('win_year_perc', 0)*100:.1f}%")
     omega = ps.omega_score_vs_benchmark(result['port'])

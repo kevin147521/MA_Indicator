@@ -18,25 +18,27 @@
 - 💼 Portfolio 組合：4 策略 1/4 等權重組合（沿用 notebook cell 7-8）
 - 🎲 蒙地卡羅壓力：bootstrap 95/97.5/99/99.7% 4 分位 Sortino/Omega 衰減
 
-**💰 第 10 個「💰 大戶買賣力」（V1 sidebar 第 10 個選項 / 也有獨立頁面版本）**
+**💰 第 9 個「💰 大戶買賣力」功能（已融入 V1 sidebar）**
 
 ⚠️ finlab 沒有逐筆「特大單/大單」資料，用集保大戶週持股變化 + 成交量當代理指標
 
-**兩種檢視方式**：
+**檢視方式**：
 
-| 方式 | URL | 啟動指令 |
-|---|---|---|
-| **V1 sidebar 內嵌** | http://127.0.0.1:8765 → sidebar「💰 大戶買賣力」 | `./start.command` |
-| **獨立頁面 (8767)** | http://127.0.0.1:8767 | `./start_big_player.command` |
+V1 sidebar radio 第 9 個選項 `💰 大戶買賣力`，直接點就切換。
 
-**功能（兩個版本都一樣）**：
+URL: http://127.0.0.1:8765 → 點 sidebar「💰 大戶買賣力」
+
+**功能**：
 - 個股選擇（熱門 + 全市場前 300 檔）+ 時間範圍 pills (1M/3M/6M/1Y/全部)
 - 5+3 個 metric：大戶持股%/人數/持有股數/淨買股數/成交量 + 買賣比%/差比%/買賣力 (5週累計)
 - 3-row subplot 時間序列圖（大戶持股% / 淨買股數 / 買賣比+差比 含 ±20% 強弱線）
 - 4 區域判斷（領先/改善/弱化/落後）+ 3 等級強弱（強勢/中性/弱勢）
 - 最近 12 週明細表 + 公式說明 expander
 
-獨立頁面用 `big_player_app.py`（不在 V1 sidebar 內），雙擊 `start_big_player.command` 即可啟動。
+**備用獨立頁面**（不在 V1 sidebar 內，port 8767）：
+- 已有獨立檔案 `big_player_app.py` + `start_big_player.command`
+- 預設沒啟動，要用時雙擊 `start_big_player.command` 即可
+- 共用同一個 `big_player_page.py` helper，不會重複維護
 
 ### 已組成的資料版本
 

@@ -592,7 +592,14 @@ def _scan_main_force(market_cap_top: int = 300,
     df['融資賣出(張)'] = df['stock_id'].map(ms_today).fillna(0).round(0)
     df['融資淨買(張)'] = df['stock_id'].map(net_today).fillna(0).round(0)
     df['成交量(張)'] = (df['stock_id'].map(vol_1d).fillna(0) / 1000).round(0)
-    df['漲跌幅%'] = df['stock_id'].map(ret).fillna(0).round(2)
+    # 改用 price_map 取漲跌幅 (跟收盤價同來源，避免重算)
+    price_map = _cached_security_with_price()
+    df['收盤價'] = df['stock_id'].map(price_map).apply(
+        lambda x: x.get('close', 0) if isinstance(x, dict) else 0
+    )
+    df['漲跌幅%'] = df['stock_id'].map(price_map).apply(
+        lambda x: x.get('change_pct', 0) if isinstance(x, dict) else 0
+    )
 
     # 3 日累計
     df['融資力3日累計(張)'] = df['stock_id'].map(net_3d).fillna(0).round(0)
@@ -842,6 +849,15 @@ def _scan_institutional(market_cap_top: int = 300,
     df['成交量3日(張)'] = (df['stock_id'].map(vol_3d).fillna(0) / 1000).round(0)
     df['成交量5日(張)'] = (df['stock_id'].map(vol_5d).fillna(0) / 1000).round(0)
     df['漲跌幅%'] = df['stock_id'].map(ret).fillna(0).round(2)
+
+    # 改用 price_map 取收盤價 + 漲跌幅 (跟其他欄位同來源)
+    price_map = _cached_security_with_price()
+    df['收盤價'] = df['stock_id'].map(price_map).apply(
+        lambda x: x.get('close', 0) if isinstance(x, dict) else 0
+    )
+    df['漲跌幅%'] = df['stock_id'].map(price_map).apply(
+        lambda x: x.get('change_pct', 0) if isinstance(x, dict) else 0
+    )
 
     # === 成交量增幅 (5 種) ===
     vol_prev1d_map = (df['stock_id'].map(vol_prev1d).fillna(0) / 1000).round(0)
@@ -1202,12 +1218,12 @@ def _render_margin_scan():
     # 明細表（含當天 / 3 日 / 5 日三視角 + 5 種成交量增幅）
     st.markdown("#### 📋 完整明細表（含當天 / 3 日 / 5 日三視角 + 5 種成交量增幅）")
     display_df = df[['stock_id', '名稱', '市場', '產業', '市值(億)',
+                      '收盤價', '漲跌幅%',
                       '融資買進(張)', '融資賣出(張)', '融資淨買(張)',
                       '成交量(張)', '成交量單日增%', '成交量較3日前增%', '成交量較5日前增%',
                       '主力力道%',
                       '融資力3日累計(張)', '成交量3日(張)', '成交量3日累計增%', '主力力道3日%',
-                      '融資力5日累計(張)', '成交量5日(張)', '成交量5日累計增%', '主力力道5日%',
-                      '漲跌幅%']].copy()
+                      '融資力5日累計(張)', '成交量5日(張)', '成交量5日累計增%', '主力力道5日%']].copy()
     # 格式化
     for col in ['融資買進(張)', '融資賣出(張)', '成交量(張)', '成交量3日(張)', '成交量5日(張)']:
         display_df[col] = display_df[col].apply(lambda x: f"{int(x):,}")
@@ -1215,9 +1231,9 @@ def _render_margin_scan():
         display_df[col] = display_df[col].apply(lambda x: f"{int(x):+,}")
     for col in ['主力力道%', '主力力道3日%', '主力力道5日%',
                 '成交量單日增%', '成交量3日累計增%', '成交量5日累計增%',
-                '成交量較3日前增%', '成交量較5日前增%']:
+                '成交量較3日前增%', '成交量較5日前增%', '漲跌幅%']:
         display_df[col] = display_df[col].apply(lambda x: f"{x:+.2f}%")
-    display_df['漲跌幅%'] = display_df['漲跌幅%'].apply(lambda x: f"{x:+.2f}%")
+    display_df['收盤價'] = display_df['收盤價'].apply(lambda x: f"{x:,.2f}")
     st.dataframe(display_df, hide_index=True, width="stretch", height=600)
 
     # ============ CSV 下載 ============
@@ -1505,7 +1521,7 @@ def _render_institutional_scan():
     # ============ 明細表（含 4 個法人 × 3 時間視角） ============
     st.markdown("#### 📋 完整明細表（4 法人 × 3 時間視角）")
     display_cols = [
-        'stock_id', '名稱', '市場', '產業', '市值(億)',
+        'stock_id', '名稱', '市場', '產業', '市值(億)', '收盤價', '漲跌幅%',
         '外資買賣超(張)', '投信買賣超(張)', '自營商買賣超(張)', '三大法人合計(張)',
         '成交量(張)', '成交量單日增%', '成交量較3日前增%', '成交量較5日前增%',
         '外資力道%', '投信力道%', '自營商力道%', '三大法人力道%',
@@ -1515,16 +1531,16 @@ def _render_institutional_scan():
         '外資5日累計(張)', '投信5日累計(張)', '自營商5日累計(張)', '三大法人合計5日(張)',
         '成交量5日(張)', '成交量5日累計增%',
         '外資力道5日%', '投信力道5日%', '自營商力道5日%', '三大法人力道5日%',
-        '漲跌幅%',
     ]
     display_df = df[display_cols].copy()
     # 格式化
     for col in ['成交量(張)', '成交量3日(張)', '成交量5日(張)']:
         display_df[col] = display_df[col].apply(lambda x: f"{int(x):,}")
+    display_df['收盤價'] = display_df['收盤價'].apply(lambda x: f"{x:,.2f}")
     for col in display_cols:
         if '(張)' in col and col not in ['成交量(張)', '成交量3日(張)', '成交量5日(張)']:
             display_df[col] = display_df[col].apply(lambda x: f"{x:+,.1f}")
-        elif '力道%' in col or '增%' in col:
+        elif '力道%' in col or '增%' in col or col == '漲跌幅%':
             display_df[col] = display_df[col].apply(lambda x: f"{x:+.2f}%")
     display_df['漲跌幅%'] = display_df['漲跌幅%'].apply(lambda x: f"{x:+.2f}%")
     st.dataframe(display_df, hide_index=True, width="stretch", height=600)

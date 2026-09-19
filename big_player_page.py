@@ -152,7 +152,6 @@ def _render_individual_tab():
         if sid in price_map:
             p = price_map[sid]
             return f"{p['name']} ({sid}) ¥{p['close']:,.0f} {p['change_pct']:+.2f}% {p['change_sign']}"
-        # 沒抓到價的 fallback
         return f"{default_name or '?'} ({sid})"
 
     POPULAR = {
@@ -170,44 +169,79 @@ def _render_individual_tab():
     POPULAR_SIDS = list(POPULAR.keys())
     POPULAR_OPTIONS = [_fmt_option(sid, POPULAR[sid]) for sid in POPULAR_SIDS]
 
-    # 全市場前 300 大（按代號排序）
+    # 全市場清單
     all_stocks = [(sid, info['name']) for sid, info in price_map.items() if info['name']]
     all_stocks_sorted = sorted(all_stocks, key=lambda x: int(x[0]) if x[0].isdigit() else 99999)
-    ALL_OPTIONS = [_fmt_option(sid, name) for sid, name in all_stocks_sorted[:300]]
-    options = POPULAR_OPTIONS + ALL_OPTIONS
+    sid_to_name = dict(all_stocks_sorted)
 
-    col_pick, col_range = st.columns([2, 1])
-    with col_pick:
-        default_idx = 0  # 預設 2330
-        selected = st.selectbox(
-            "選擇個股",
-            options=range(len(options)),
-            format_func=lambda i: options[i],
-            index=default_idx,
-            key="bp_stock_select",
-        )
-        if selected < len(POPULAR_SIDS):
+    # ============ 個股查詢 (text_input 為主) ============
+    st.markdown("### 🔍 個股查詢")
+
+    # 解析搜尋輸入
+    search_input = st.text_input(
+        "代號或名稱",
+        value=st.session_state.get("bp_search_input_v2", ""),
+        placeholder="輸入 例如: 2330 / 台積電 / TSMC",
+        key="bp_search_input_v2",
+        label_visibility="collapsed",
+        help="直接輸入代號或名稱查詢，支援部分匹配。按 Enter 自動套用。",
+    )
+
+    matched_sid = None
+    matched_label = None
+    if search_input and search_input.strip():
+        sq = search_input.strip().lower()
+        # 1. 代號精確匹配 (優先)
+        if sq in sid_to_name:  # 代號完全相等
+            matched_sid = sq
+        # 2. 代號部分匹配
+        if not matched_sid:
+            for sid in sid_to_name.keys():
+                if sq in sid.lower():
+                    matched_sid = sid
+                    break
+        # 3. 名稱部分匹配
+        if not matched_sid:
+            for sid, name in sid_to_name.items():
+                if sq in name.lower():
+                    matched_sid = sid
+                    break
+        if matched_sid:
+            matched_label = _fmt_option(matched_sid, sid_to_name.get(matched_sid, '?'))
+
+    # 時間範圍 (在第二行)
+    range_label = st.pills(
+        "時間範圍",
+        options=["1M", "3M", "6M", "1Y", "全部"],
+        default="3M",
+        key="bp_range_pills",
+    )
+
+    st.divider()
+
+    if matched_sid:
+        # ✅ 搜尋輸入有效: 自動顯示該股資料
+        stock_id = matched_sid
+        label = matched_label
+        st.success(f"✅ 查詢到: **{label}**")
+    else:
+        # ❌ 搜尋無效 (或空): fallback 到 dropdown (熱門股)
+        if search_input and search_input.strip():
+            st.error(f"❌ 找不到「{search_input}」— 請用下方熱門股清單或重新輸入")
+        col_l, col_r = st.columns([3, 1])
+        with col_l:
+            selected = st.selectbox(
+                "熱門股清單",
+                options=range(len(POPULAR_OPTIONS)),
+                format_func=lambda i: POPULAR_OPTIONS[i],
+                index=0,
+                key="bp_stock_select_v2",
+                label_visibility="collapsed",
+            )
             stock_id = POPULAR_SIDS[selected]
-            label = options[selected]  # 含價/漲跌的完整字串
-        else:
-            # ALL_OPTIONS 格式: "台積電 (2330) ¥1,025 +4.67% 🟢" — 從 (...) 抓 sid
-            import re as _re
-            m = _re.search(r'\((\d+)\)', options[selected])
-            stock_id = m.group(1) if m else options[selected].split(" ")[0]
-            label = options[selected]
-
-    with col_range:
-        range_label = st.pills(
-            "時間範圍",
-            options=["1M", "3M", "6M", "1Y", "全部"],
-            default="3M",
-            key="bp_range_pills",
-            label_visibility="visible",
-        )
-
-    if not stock_id:
-        st.info("👈 請選擇個股")
-        return
+            label = POPULAR_OPTIONS[selected]
+        with col_r:
+            st.caption("💡 輸入上方的**代號或名稱**即可快速查詢任意個股")
 
     try:
         df = _get_daily(stock_id)

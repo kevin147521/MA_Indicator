@@ -435,7 +435,9 @@ def _scan_main_force(market_cap_top: int = 300,
                      min_force_pct: float = 0.0,
                      min_margin_net_buy_lots: int = 0,
                      min_price_chg_pct: float = 0.0,
-                     market_filter: tuple = ('sii', 'otc')) -> pd.DataFrame:
+                     market_filter: tuple = ('sii', 'otc'),
+                     min_vol_change_pct: float = 0.0,
+                     vol_change_filter_types: tuple = ()) -> pd.DataFrame:
     """
     掃描個股，計算主力力道%
 
@@ -503,20 +505,30 @@ def _scan_main_force(market_cap_top: int = 300,
     ms_5d.index = ms_5d.index.astype(str)
     net_5d = (mb_5d - ms_5d)
 
-    # 成交量 (當天 / 3 日 / 5 日累計)
+    # 成交量 (當天 / 3 日 / 5 日累計 + 對比基準)
     vol = _finlab_data.get('price:成交股數')
     if last_date in vol.index:
-        vol_1d = vol.loc[last_date]
-        vol_3d = vol.iloc[max(0, vol.index.get_loc(last_date) - 2):vol.index.get_loc(last_date) + 1].sum()
-        vol_5d = vol.iloc[max(0, vol.index.get_loc(last_date) - 4):vol.index.get_loc(last_date) + 1].sum()
+        last_vol_idx = vol.index.get_loc(last_date)
     else:
-        last_vol_idx = -1
-        vol_1d = vol.iloc[last_vol_idx]
-        vol_3d = vol.iloc[max(0, last_vol_idx - 2):last_vol_idx + 1].sum()
-        vol_5d = vol.iloc[max(0, last_vol_idx - 4):last_vol_idx + 1].sum()
+        last_vol_idx = len(vol) - 1
+    vol_1d = vol.iloc[last_vol_idx]
+    vol_3d = vol.iloc[max(0, last_vol_idx - 2):last_vol_idx + 1].sum()
+    vol_5d = vol.iloc[max(0, last_vol_idx - 4):last_vol_idx + 1].sum()
+    # 基準期成交量 (前 1 日 / 前 3 日 / 前 5 日)
+    vol_prev1d = vol.iloc[max(0, last_vol_idx - 1)] if last_vol_idx - 1 >= 0 else vol_1d
+    vol_prev3d = vol.iloc[max(0, last_vol_idx - 5):max(0, last_vol_idx - 2)].sum() if last_vol_idx - 2 >= 0 else vol_3d
+    vol_prev5d = vol.iloc[max(0, last_vol_idx - 9):max(0, last_vol_idx - 4)].sum() if last_vol_idx - 4 >= 0 else vol_5d
+    # N 個交易日前的單日成交量
+    vol_3d_ago = vol.iloc[max(0, last_vol_idx - 3)] if last_vol_idx - 3 >= 0 else vol_1d
+    vol_5d_ago = vol.iloc[max(0, last_vol_idx - 5)] if last_vol_idx - 5 >= 0 else vol_1d
     vol_1d.index = vol_1d.index.astype(str)
     vol_3d.index = vol_3d.index.astype(str)
     vol_5d.index = vol_5d.index.astype(str)
+    vol_prev1d.index = vol_prev1d.index.astype(str)
+    vol_prev3d.index = vol_prev3d.index.astype(str)
+    vol_prev5d.index = vol_prev5d.index.astype(str)
+    vol_3d_ago.index = vol_3d_ago.index.astype(str)
+    vol_5d_ago.index = vol_5d_ago.index.astype(str)
 
     # 漲跌
     close = _finlab_data.get('price:收盤價')
@@ -573,11 +585,63 @@ def _scan_main_force(market_cap_top: int = 300,
         0
     ).round(2)
 
+    # === 成交量增幅 (5 種) ===
+    vol_prev1d_map = (df['stock_id'].map(vol_prev1d).fillna(0) / 1000).round(0)
+    vol_prev3d_map = (df['stock_id'].map(vol_prev3d).fillna(0) / 1000).round(0)
+    vol_prev5d_map = (df['stock_id'].map(vol_prev5d).fillna(0) / 1000).round(0)
+    vol_3d_ago_map = (df['stock_id'].map(vol_3d_ago).fillna(0) / 1000).round(0)
+    vol_5d_ago_map = (df['stock_id'].map(vol_5d_ago).fillna(0) / 1000).round(0)
+
+    # 1) 單日成交量增% = 今日 / 昨日 - 1
+    df['成交量單日增%'] = np.where(
+        vol_prev1d_map > 0,
+        (df['成交量(張)'] / vol_prev1d_map - 1) * 100,
+        0
+    ).round(2)
+    # 2) 3 日累計成交量增% = 近 3 日累計 / 前 3 日累計 - 1
+    df['成交量3日累計增%'] = np.where(
+        vol_prev3d_map > 0,
+        (df['成交量3日(張)'] / vol_prev3d_map - 1) * 100,
+        0
+    ).round(2)
+    # 3) 5 日累計成交量增% = 近 5 日累計 / 前 5 日累計 - 1
+    df['成交量5日累計增%'] = np.where(
+        vol_prev5d_map > 0,
+        (df['成交量5日(張)'] / vol_prev5d_map - 1) * 100,
+        0
+    ).round(2)
+    # 4) 較 3 日前單日成交量增% = 今日 / 3 日前單日 - 1
+    df['成交量較3日前增%'] = np.where(
+        vol_3d_ago_map > 0,
+        (df['成交量(張)'] / vol_3d_ago_map - 1) * 100,
+        0
+    ).round(2)
+    # 5) 較 5 日前單日成交量增% = 今日 / 5 日前單日 - 1
+    df['成交量較5日前增%'] = np.where(
+        vol_5d_ago_map > 0,
+        (df['成交量(張)'] / vol_5d_ago_map - 1) * 100,
+        0
+    ).round(2)
+
     # 過濾條件（先篩再排）
     df = df[df['成交量(張)'] >= min_volume_lots]
     df = df[df['融資淨買(張)'] >= min_margin_net_buy_lots]
     df = df[df['漲跌幅%'] >= min_price_chg_pct]
     df = df[df['主力力道%'] >= min_force_pct]
+
+    # 成交量增幅過濾 (AND 邏輯：選的時間視角都要 ≥門檻)
+    vol_change_col_map = {
+        '單日 (vs 昨日)': '成交量單日增%',
+        '3 日累計 (vs 前 3 日)': '成交量3日累計增%',
+        '5 日累計 (vs 前 5 日)': '成交量5日累計增%',
+        '較 3 日前 (單日)': '成交量較3日前增%',
+        '較 5 日前 (單日)': '成交量較5日前增%',
+    }
+    if vol_change_filter_types and min_vol_change_pct != 0:
+        for vtype in vol_change_filter_types:
+            col = vol_change_col_map.get(vtype)
+            if col:
+                df = df[df[col] >= min_vol_change_pct]
 
     df = df.sort_values('主力力道%', ascending=False).reset_index(drop=True)
     df.attrs['scan_date'] = last_date.strftime('%Y-%m-%d')
@@ -589,6 +653,10 @@ def _scan_main_force(market_cap_top: int = 300,
         '最小融資淨買 (張)': f'≥ {min_margin_net_buy_lots:,}' if min_margin_net_buy_lots > 0 else '不限',
         '最小漲跌幅 (%)': f'≥ {min_price_chg_pct:+.1f}%' if min_price_chg_pct != 0 else '不限',
         '主力力道% 門檻': f'≥ {min_force_pct:.1f}%' if min_force_pct > 0 else '不限',
+        '成交量增幅 (%)': (
+            f'≥ {min_vol_change_pct:+.1f}% ({", ".join(vol_change_filter_types)})'
+            if vol_change_filter_types and min_vol_change_pct != 0 else '不限'
+        ),
     }
     return df
 
@@ -601,7 +669,9 @@ def _scan_institutional(market_cap_top: int = 300,
                         min_volume_lots: int = 2000,
                         min_inst_net_lots: int = 0,
                         min_price_chg_pct: float = 0.0,
-                        market_filter: tuple = ('sii', 'otc')) -> pd.DataFrame:
+                        market_filter: tuple = ('sii', 'otc'),
+                        min_vol_change_pct: float = 0.0,
+                        vol_change_filter_types: tuple = ()) -> pd.DataFrame:
     """
     掃描個股的三大法人 (外資/投信/自營商) 買賣超
 
@@ -669,20 +739,28 @@ def _scan_institutional(market_cap_top: int = 300,
     t_5d.index = t_5d.index.astype(str)
     d_5d.index = d_5d.index.astype(str)
 
-    # 成交量
+    # 成交量 (當天 / 3 日 / 5 日累計 + 對比基準)
     vol = _finlab_data.get('price:成交股數')
     if last_date in vol.index:
-        vol_1d = vol.loc[last_date]
-        vol_3d = vol.iloc[max(0, vol.index.get_loc(last_date) - 2):vol.index.get_loc(last_date) + 1].sum()
-        vol_5d = vol.iloc[max(0, vol.index.get_loc(last_date) - 4):vol.index.get_loc(last_date) + 1].sum()
+        last_vol_idx = vol.index.get_loc(last_date)
     else:
-        last_vol_idx = -1
-        vol_1d = vol.iloc[last_vol_idx]
-        vol_3d = vol.iloc[max(0, last_vol_idx - 2):last_vol_idx + 1].sum()
-        vol_5d = vol.iloc[max(0, last_vol_idx - 4):last_vol_idx + 1].sum()
+        last_vol_idx = len(vol) - 1
+    vol_1d = vol.iloc[last_vol_idx]
+    vol_3d = vol.iloc[max(0, last_vol_idx - 2):last_vol_idx + 1].sum()
+    vol_5d = vol.iloc[max(0, last_vol_idx - 4):last_vol_idx + 1].sum()
+    vol_prev1d = vol.iloc[max(0, last_vol_idx - 1)] if last_vol_idx - 1 >= 0 else vol_1d
+    vol_prev3d = vol.iloc[max(0, last_vol_idx - 5):max(0, last_vol_idx - 2)].sum() if last_vol_idx - 2 >= 0 else vol_3d
+    vol_prev5d = vol.iloc[max(0, last_vol_idx - 9):max(0, last_vol_idx - 4)].sum() if last_vol_idx - 4 >= 0 else vol_5d
+    vol_3d_ago = vol.iloc[max(0, last_vol_idx - 3)] if last_vol_idx - 3 >= 0 else vol_1d
+    vol_5d_ago = vol.iloc[max(0, last_vol_idx - 5)] if last_vol_idx - 5 >= 0 else vol_1d
     vol_1d.index = vol_1d.index.astype(str)
     vol_3d.index = vol_3d.index.astype(str)
     vol_5d.index = vol_5d.index.astype(str)
+    vol_prev1d.index = vol_prev1d.index.astype(str)
+    vol_prev3d.index = vol_prev3d.index.astype(str)
+    vol_prev5d.index = vol_prev5d.index.astype(str)
+    vol_3d_ago.index = vol_3d_ago.index.astype(str)
+    vol_5d_ago.index = vol_5d_ago.index.astype(str)
 
     # 漲跌
     close = _finlab_data.get('price:收盤價')
@@ -731,6 +809,33 @@ def _scan_institutional(market_cap_top: int = 300,
     df['成交量5日(張)'] = (df['stock_id'].map(vol_5d).fillna(0) / 1000).round(0)
     df['漲跌幅%'] = df['stock_id'].map(ret).fillna(0).round(2)
 
+    # === 成交量增幅 (5 種) ===
+    vol_prev1d_map = (df['stock_id'].map(vol_prev1d).fillna(0) / 1000).round(0)
+    vol_prev3d_map = (df['stock_id'].map(vol_prev3d).fillna(0) / 1000).round(0)
+    vol_prev5d_map = (df['stock_id'].map(vol_prev5d).fillna(0) / 1000).round(0)
+    vol_3d_ago_map = (df['stock_id'].map(vol_3d_ago).fillna(0) / 1000).round(0)
+    vol_5d_ago_map = (df['stock_id'].map(vol_5d_ago).fillna(0) / 1000).round(0)
+    df['成交量單日增%'] = np.where(
+        vol_prev1d_map > 0,
+        (df['成交量(張)'] / vol_prev1d_map - 1) * 100, 0
+    ).round(2)
+    df['成交量3日累計增%'] = np.where(
+        vol_prev3d_map > 0,
+        (df['成交量3日(張)'] / vol_prev3d_map - 1) * 100, 0
+    ).round(2)
+    df['成交量5日累計增%'] = np.where(
+        vol_prev5d_map > 0,
+        (df['成交量5日(張)'] / vol_prev5d_map - 1) * 100, 0
+    ).round(2)
+    df['成交量較3日前增%'] = np.where(
+        vol_3d_ago_map > 0,
+        (df['成交量(張)'] / vol_3d_ago_map - 1) * 100, 0
+    ).round(2)
+    df['成交量較5日前增%'] = np.where(
+        vol_5d_ago_map > 0,
+        (df['成交量(張)'] / vol_5d_ago_map - 1) * 100, 0
+    ).round(2)
+
     # === 法人力道% (法人淨買股 / 當日成交量股) ===
     # 法人買賣超單位 = 張, 成交量單位 = 張, 直接除
     for col, num_col, den_col in [
@@ -776,6 +881,20 @@ def _scan_institutional(market_cap_top: int = 300,
     df = df[df['三大法人合計(張)'] >= min_inst_net_lots]
     df = df[df['漲跌幅%'] >= min_price_chg_pct]
 
+    # 成交量增幅過濾 (AND 邏輯)
+    vol_change_col_map = {
+        '單日 (vs 昨日)': '成交量單日增%',
+        '3 日累計 (vs 前 3 日)': '成交量3日累計增%',
+        '5 日累計 (vs 前 5 日)': '成交量5日累計增%',
+        '較 3 日前 (單日)': '成交量較3日前增%',
+        '較 5 日前 (單日)': '成交量較5日前增%',
+    }
+    if vol_change_filter_types and min_vol_change_pct != 0:
+        for vtype in vol_change_filter_types:
+            col = vol_change_col_map.get(vtype)
+            if col:
+                df = df[df[col] >= min_vol_change_pct]
+
     # 預設排序：三大法人力道% 當天降冪
     df = df.sort_values('三大法人力道%', ascending=False).reset_index(drop=True)
     df.attrs['scan_date'] = last_date.strftime('%Y-%m-%d')
@@ -786,6 +905,10 @@ def _scan_institutional(market_cap_top: int = 300,
         '最小成交量 (張)': f'≥ {min_volume_lots:,}',
         '最小三大法人合計 (張)': f'≥ {min_inst_net_lots:,}' if min_inst_net_lots > 0 else '不限',
         '最小漲跌幅 (%)': f'≥ {min_price_chg_pct:+.1f}%' if min_price_chg_pct != 0 else '不限',
+        '成交量增幅 (%)': (
+            f'≥ {min_vol_change_pct:+.1f}% ({", ".join(vol_change_filter_types)})'
+            if vol_change_filter_types and min_vol_change_pct != 0 else '不限'
+        ),
     }
     return df
 
@@ -895,6 +1018,28 @@ def _render_margin_scan():
                 help="預設 0 = 含下跌。設 5 = 只列漲 ≥ 5%。設 -3 = 含跌 ≤ 3%",
             )
 
+        # 成交量增幅篩選 (第 4 行)
+        col4, col5 = st.columns([2, 1])
+        with col4:
+            min_vol_change = st.slider(
+                "📈 最小成交量增幅 (%)",
+                min_value=-80, max_value=500, value=0, step=10,
+                key="scan_min_vol_change",
+                help=(
+                    "成交量增幅門檻，套用於下方選擇的時間視角。\n"
+                    "0% = 不限, 50% = 量增 ≥50%, 100% = 量增 ≥100% (翻倍)\n"
+                    "-30% = 縮量 ≥30% (過濾量能萎縮股)"
+                ),
+            )
+            vol_change_types = st.multiselect(
+                "📊 成交量增幅套用於",
+                options=['單日 (vs 昨日)', '3 日累計 (vs 前 3 日)', '5 日累計 (vs 前 5 日)',
+                         '較 3 日前 (單日)', '較 5 日前 (單日)'],
+                default=['單日 (vs 昨日)'],
+                key="scan_vol_change_types",
+                help="勾選的視角都要 ≥門檻 (AND 邏輯)",
+            )
+
         col_btn1, col_btn2, _ = st.columns([1, 1, 4])
         with col_btn1:
             run_btn = st.button("🚀 重新掃描", type="primary", key="scan_refresh")
@@ -904,6 +1049,8 @@ def _render_margin_scan():
                 st.session_state["scan_min_vol"] = 5000
                 st.session_state["scan_min_force"] = 3.0
                 st.session_state["scan_min_chg"] = 2.0
+                st.session_state["scan_min_vol_change"] = 30
+                st.session_state["scan_vol_change_types"] = ['單日 (vs 昨日)']
             st.button(
                 "⭐ 用推薦條件",
                 key="scan_preset",
@@ -928,6 +1075,8 @@ def _render_margin_scan():
             min_margin_net_buy_lots=min_margin_net_buy,
             min_price_chg_pct=min_price_chg,
             market_filter=tuple(market_filter),
+            min_vol_change_pct=min_vol_change,
+            vol_change_filter_types=tuple(vol_change_types),
         )
 
     scan_date = df.attrs.get('scan_date', '?')
@@ -1016,20 +1165,23 @@ def _render_margin_scan():
     )
     st.plotly_chart(fig_bar, width="stretch")
 
-    # 明細表（含當天 / 3 日 / 5 日三個視角）
-    st.markdown("#### 📋 完整明細表（含當天 / 3 日 / 5 日三視角）")
+    # 明細表（含當天 / 3 日 / 5 日三視角 + 5 種成交量增幅）
+    st.markdown("#### 📋 完整明細表（含當天 / 3 日 / 5 日三視角 + 5 種成交量增幅）")
     display_df = df[['stock_id', '名稱', '市場', '產業', '市值(億)',
                       '融資買進(張)', '融資賣出(張)', '融資淨買(張)',
-                      '成交量(張)', '主力力道%',
-                      '融資力3日累計(張)', '成交量3日(張)', '主力力道3日%',
-                      '融資力5日累計(張)', '成交量5日(張)', '主力力道5日%',
+                      '成交量(張)', '成交量單日增%', '成交量較3日前增%', '成交量較5日前增%',
+                      '主力力道%',
+                      '融資力3日累計(張)', '成交量3日(張)', '成交量3日累計增%', '主力力道3日%',
+                      '融資力5日累計(張)', '成交量5日(張)', '成交量5日累計增%', '主力力道5日%',
                       '漲跌幅%']].copy()
     # 格式化
     for col in ['融資買進(張)', '融資賣出(張)', '成交量(張)', '成交量3日(張)', '成交量5日(張)']:
         display_df[col] = display_df[col].apply(lambda x: f"{int(x):,}")
     for col in ['融資淨買(張)', '融資力3日累計(張)', '融資力5日累計(張)']:
         display_df[col] = display_df[col].apply(lambda x: f"{int(x):+,}")
-    for col in ['主力力道%', '主力力道3日%', '主力力道5日%']:
+    for col in ['主力力道%', '主力力道3日%', '主力力道5日%',
+                '成交量單日增%', '成交量3日累計增%', '成交量5日累計增%',
+                '成交量較3日前增%', '成交量較5日前增%']:
         display_df[col] = display_df[col].apply(lambda x: f"{x:+.2f}%")
     display_df['漲跌幅%'] = display_df['漲跌幅%'].apply(lambda x: f"{x:+.2f}%")
     st.dataframe(display_df, hide_index=True, width="stretch", height=600)
@@ -1145,6 +1297,23 @@ def _render_institutional_scan():
                 help="預設 0 = 含下跌。設 5 = 只列漲 ≥ 5%",
             )
 
+        # 成交量增幅篩選 (第 4 行)
+        col4, col5 = st.columns([2, 1])
+        with col4:
+            min_vol_change = st.slider(
+                "📈 最小成交量增幅 (%)",
+                min_value=-80, max_value=500, value=0, step=10,
+                key="inst_min_vol_change",
+                help="套用於下方選擇的時間視角。0% = 不限",
+            )
+            vol_change_types = st.multiselect(
+                "📊 成交量增幅套用於",
+                options=['單日 (vs 昨日)', '3 日累計 (vs 前 3 日)', '5 日累計 (vs 前 5 日)',
+                         '較 3 日前 (單日)', '較 5 日前 (單日)'],
+                default=['單日 (vs 昨日)'],
+                key="inst_vol_change_types",
+            )
+
         col_btn1, col_btn2, _ = st.columns([1, 1, 4])
         with col_btn1:
             run_btn = st.button("🚀 重新掃描", type="primary", key="inst_refresh")
@@ -1153,10 +1322,12 @@ def _render_institutional_scan():
                 st.session_state["inst_min_vol"] = 5000
                 st.session_state["inst_min_net"] = 500
                 st.session_state["inst_min_chg"] = 1.0
+                st.session_state["inst_min_vol_change"] = 30
+                st.session_state["inst_vol_change_types"] = ['單日 (vs 昨日)']
             st.button(
                 "⭐ 用推薦條件",
                 key="inst_preset",
-                help="成交量 ≥ 5000 張 + 三大法人淨買 ≥ 500 張 + 漲 ≥ 1%",
+                help="成交量 ≥ 5000 張 + 三大法人淨買 ≥ 500 張 + 漲 ≥ 1% + 量增 ≥30%",
                 on_click=_apply_inst_preset,
             )
 
@@ -1175,6 +1346,8 @@ def _render_institutional_scan():
             min_inst_net_lots=min_inst_net,
             min_price_chg_pct=min_price_chg,
             market_filter=tuple(market_filter),
+            min_vol_change_pct=min_vol_change,
+            vol_change_filter_types=tuple(vol_change_types),
         )
 
     if df.empty:
@@ -1300,21 +1473,24 @@ def _render_institutional_scan():
     display_cols = [
         'stock_id', '名稱', '市場', '產業', '市值(億)',
         '外資買賣超(張)', '投信買賣超(張)', '自營商買賣超(張)', '三大法人合計(張)',
+        '成交量(張)', '成交量單日增%', '成交量較3日前增%', '成交量較5日前增%',
         '外資力道%', '投信力道%', '自營商力道%', '三大法人力道%',
         '外資3日累計(張)', '投信3日累計(張)', '自營商3日累計(張)', '三大法人合計3日(張)',
+        '成交量3日(張)', '成交量3日累計增%',
         '外資力道3日%', '投信力道3日%', '自營商力道3日%', '三大法人力道3日%',
         '外資5日累計(張)', '投信5日累計(張)', '自營商5日累計(張)', '三大法人合計5日(張)',
+        '成交量5日(張)', '成交量5日累計增%',
         '外資力道5日%', '投信力道5日%', '自營商力道5日%', '三大法人力道5日%',
-        '成交量(張)', '漲跌幅%',
+        '漲跌幅%',
     ]
     display_df = df[display_cols].copy()
     # 格式化
-    for col in ['成交量(張)']:
+    for col in ['成交量(張)', '成交量3日(張)', '成交量5日(張)']:
         display_df[col] = display_df[col].apply(lambda x: f"{int(x):,}")
     for col in display_cols:
-        if '(張)' in col and col != '成交量(張)':
+        if '(張)' in col and col not in ['成交量(張)', '成交量3日(張)', '成交量5日(張)']:
             display_df[col] = display_df[col].apply(lambda x: f"{x:+,.1f}")
-        elif '力道%' in col:
+        elif '力道%' in col or '增%' in col:
             display_df[col] = display_df[col].apply(lambda x: f"{x:+.2f}%")
     display_df['漲跌幅%'] = display_df['漲跌幅%'].apply(lambda x: f"{x:+.2f}%")
     st.dataframe(display_df, hide_index=True, width="stretch", height=600)

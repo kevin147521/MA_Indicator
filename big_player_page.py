@@ -521,18 +521,237 @@ def _scan_main_force(market_cap_top: int = 300,
     return df
 
 
+# ============================================================
+# Tab 2 (副): 三大法人買賣超掃描
+# ============================================================
+@st.cache_data(ttl=1800, show_spinner="掃描三大法人買賣超中…")
+def _scan_institutional(market_cap_top: int = 300,
+                        min_volume_lots: int = 2000,
+                        min_inst_net_lots: int = 0,
+                        min_price_chg_pct: float = 0.0,
+                        market_filter: tuple = ('sii', 'otc')) -> pd.DataFrame:
+    """
+    掃描個股的三大法人 (外資/投信/自營商) 買賣超
+
+    ✅ 真實三大法人資料 (finlab `institutional_investors_trading_summary:*`)
+
+    Parameters
+    ----------
+    market_cap_top : int
+        取市值前 N 大
+    min_volume_lots : int
+        最小當日成交量（張）門檻，過濾量能過小的個股
+    min_inst_net_lots : int
+        最小三大法人合計淨買（張）門檻 (>= 才列)。預設 0 = 不限
+    min_price_chg_pct : float
+        最小漲跌幅 (%) 門檻
+    market_filter : tuple of str
+        市場別 ('sii', 'otc')
+
+    Returns
+    -------
+    DataFrame with columns:
+        stock_id, 名稱, 市場, 產業, 市值(億),
+        外資買賣超(張), 投信買賣超(張), 自營商買賣超(張), 三大法人合計(張),
+        外資3日累計, 投信3日累計, 自營商3日累計, 三大法人合計3日,
+        外資5日累計, 投信5日累計, 自營商5日累計, 三大法人合計5日,
+        外資力道%, 投信力道%, 自營商力道%, 三大法人力道%, (3日/5日 同),
+        成交量(張), 漲跌幅%
+    """
+    secs = get_all_securities()
+    pure_secs = secs[secs['market'].isin(list(market_filter))].copy()
+    pure_secs['stock_id'] = pure_secs['stock_id'].astype(str)
+
+    # 市值
+    mv = _finlab_data.get('etl:market_value')
+    mv_last = mv.iloc[-1]
+    mv_last.index = mv_last.index.astype(str)
+    mv_pure = mv_last[mv_last.index.isin(pure_secs['stock_id'])].dropna()
+    mv_top = mv_pure.nlargest(market_cap_top)
+
+    # 三大法人買賣超 (淨額)
+    foreign = _finlab_data.get('institutional_investors_trading_summary:外陸資買賣超股數(不含外資自營商)')
+    trust = _finlab_data.get('institutional_investors_trading_summary:投信買賣超股數')
+    dealer = _finlab_data.get('institutional_investors_trading_summary:自營商買賣超股數(自行買賣)')
+    last_date = foreign.index[-1]
+    last_idx = foreign.index.get_loc(last_date)
+
+    # 當天
+    f_1d = foreign.iloc[last_idx]; f_1d.index = f_1d.index.astype(str)
+    t_1d = trust.iloc[last_idx]; t_1d.index = t_1d.index.astype(str)
+    d_1d = dealer.iloc[last_idx]; d_1d.index = d_1d.index.astype(str)
+
+    # 3 日累計 (張 → 股 ÷ 1000 轉成「張」)
+    f_3d = foreign.iloc[max(0, last_idx - 2):last_idx + 1].sum()
+    t_3d = trust.iloc[max(0, last_idx - 2):last_idx + 1].sum()
+    d_3d = dealer.iloc[max(0, last_idx - 2):last_idx + 1].sum()
+    f_3d.index = f_3d.index.astype(str)
+    t_3d.index = t_3d.index.astype(str)
+    d_3d.index = d_3d.index.astype(str)
+
+    # 5 日累計
+    f_5d = foreign.iloc[max(0, last_idx - 4):last_idx + 1].sum()
+    t_5d = trust.iloc[max(0, last_idx - 4):last_idx + 1].sum()
+    d_5d = dealer.iloc[max(0, last_idx - 4):last_idx + 1].sum()
+    f_5d.index = f_5d.index.astype(str)
+    t_5d.index = t_5d.index.astype(str)
+    d_5d.index = d_5d.index.astype(str)
+
+    # 成交量
+    vol = _finlab_data.get('price:成交股數')
+    if last_date in vol.index:
+        vol_1d = vol.loc[last_date]
+        vol_3d = vol.iloc[max(0, vol.index.get_loc(last_date) - 2):vol.index.get_loc(last_date) + 1].sum()
+        vol_5d = vol.iloc[max(0, vol.index.get_loc(last_date) - 4):vol.index.get_loc(last_date) + 1].sum()
+    else:
+        last_vol_idx = -1
+        vol_1d = vol.iloc[last_vol_idx]
+        vol_3d = vol.iloc[max(0, last_vol_idx - 2):last_vol_idx + 1].sum()
+        vol_5d = vol.iloc[max(0, last_vol_idx - 4):last_vol_idx + 1].sum()
+    vol_1d.index = vol_1d.index.astype(str)
+    vol_3d.index = vol_3d.index.astype(str)
+    vol_5d.index = vol_5d.index.astype(str)
+
+    # 漲跌
+    close = _finlab_data.get('price:收盤價')
+    close_today = close.loc[last_date] if last_date in close.index else close.iloc[-1]
+    prev_idx = close.index.get_loc(last_date) - 1 if last_date in close.index else -2
+    close_yesterday = close.iloc[prev_idx]
+    close_today.index = close_today.index.astype(str)
+    close_yesterday.index = close_yesterday.index.astype(str)
+    ret = (close_today / close_yesterday - 1) * 100
+
+    df = pd.DataFrame({
+        'stock_id': mv_top.index,
+        '市值(億)': (mv_top.values / 1e8).round(1),
+    })
+    name_map = dict(zip(pure_secs['stock_id'], pure_secs['name']))
+    df['名稱'] = df['stock_id'].map(name_map).fillna('?')
+
+    basic = _finlab_data.get('company_basic_info')
+    basic['stock_id'] = basic['stock_id'].astype(str)
+    industry_map = dict(zip(basic['stock_id'], basic['產業類別']))
+    df['產業'] = df['stock_id'].map(industry_map).fillna('?')
+    df['市場'] = df['stock_id'].map(dict(zip(pure_secs['stock_id'], pure_secs['market']))).fillna('?')
+
+    # === 三大法人淨買 (張) ===
+    # 注意：法人買賣超原始是「股」 (例如 6039352.0 = 603.9 萬股 = 6039 張)
+    # 為方便閱讀，除以 1000 轉成「張」
+    df['外資買賣超(張)'] = (df['stock_id'].map(f_1d).fillna(0) / 1000).round(1)
+    df['投信買賣超(張)'] = (df['stock_id'].map(t_1d).fillna(0) / 1000).round(1)
+    df['自營商買賣超(張)'] = (df['stock_id'].map(d_1d).fillna(0) / 1000).round(1)
+    df['三大法人合計(張)'] = df['外資買賣超(張)'] + df['投信買賣超(張)'] + df['自營商買賣超(張)']
+
+    # 3 日累計
+    df['外資3日累計(張)'] = (df['stock_id'].map(f_3d).fillna(0) / 1000).round(1)
+    df['投信3日累計(張)'] = (df['stock_id'].map(t_3d).fillna(0) / 1000).round(1)
+    df['自營商3日累計(張)'] = (df['stock_id'].map(d_3d).fillna(0) / 1000).round(1)
+    df['三大法人合計3日(張)'] = df['外資3日累計(張)'] + df['投信3日累計(張)'] + df['自營商3日累計(張)']
+
+    # 5 日累計
+    df['外資5日累計(張)'] = (df['stock_id'].map(f_5d).fillna(0) / 1000).round(1)
+    df['投信5日累計(張)'] = (df['stock_id'].map(t_5d).fillna(0) / 1000).round(1)
+    df['自營商5日累計(張)'] = (df['stock_id'].map(d_5d).fillna(0) / 1000).round(1)
+    df['三大法人合計5日(張)'] = df['外資5日累計(張)'] + df['投信5日累計(張)'] + df['自營商5日累計(張)']
+
+    df['成交量(張)'] = (df['stock_id'].map(vol_1d).fillna(0) / 1000).round(0)
+    df['成交量3日(張)'] = (df['stock_id'].map(vol_3d).fillna(0) / 1000).round(0)
+    df['成交量5日(張)'] = (df['stock_id'].map(vol_5d).fillna(0) / 1000).round(0)
+    df['漲跌幅%'] = df['stock_id'].map(ret).fillna(0).round(2)
+
+    # === 法人力道% (法人淨買股 / 當日成交量股) ===
+    # 法人買賣超單位 = 張, 成交量單位 = 張, 直接除
+    for col, num_col, den_col in [
+        ('外資力道%', '外資買賣超(張)', '成交量(張)'),
+        ('投信力道%', '投信買賣超(張)', '成交量(張)'),
+        ('自營商力道%', '自營商買賣超(張)', '成交量(張)'),
+        ('三大法人力道%', '三大法人合計(張)', '成交量(張)'),
+    ]:
+        df[col] = np.where(
+            df[den_col] > 0,
+            df[num_col] / df[den_col] * 100,
+            0
+        ).round(2)
+
+    # 3 日力道%
+    for col, num_col, den_col in [
+        ('外資力道3日%', '外資3日累計(張)', '成交量3日(張)'),
+        ('投信力道3日%', '投信3日累計(張)', '成交量3日(張)'),
+        ('自營商力道3日%', '自營商3日累計(張)', '成交量3日(張)'),
+        ('三大法人力道3日%', '三大法人合計3日(張)', '成交量3日(張)'),
+    ]:
+        df[col] = np.where(
+            df[den_col] > 0,
+            df[num_col] / df[den_col] * 100,
+            0
+        ).round(2)
+
+    # 5 日力道%
+    for col, num_col, den_col in [
+        ('外資力道5日%', '外資5日累計(張)', '成交量5日(張)'),
+        ('投信力道5日%', '投信5日累計(張)', '成交量5日(張)'),
+        ('自營商力道5日%', '自營商5日累計(張)', '成交量5日(張)'),
+        ('三大法人力道5日%', '三大法人合計5日(張)', '成交量5日(張)'),
+    ]:
+        df[col] = np.where(
+            df[den_col] > 0,
+            df[num_col] / df[den_col] * 100,
+            0
+        ).round(2)
+
+    # 過濾
+    df = df[df['成交量(張)'] >= min_volume_lots]
+    df = df[df['三大法人合計(張)'] >= min_inst_net_lots]
+    df = df[df['漲跌幅%'] >= min_price_chg_pct]
+
+    # 預設排序：三大法人力道% 當天降冪
+    df = df.sort_values('三大法人力道%', ascending=False).reset_index(drop=True)
+    df.attrs['scan_date'] = last_date.strftime('%Y-%m-%d')
+    df.attrs['n_total_top'] = market_cap_top
+    df.attrs['filter_summary'] = {
+        '市值前 N 大': market_cap_top,
+        '市場別': '+'.join(market_filter),
+        '最小成交量 (張)': f'≥ {min_volume_lots:,}',
+        '最小三大法人合計 (張)': f'≥ {min_inst_net_lots:,}' if min_inst_net_lots > 0 else '不限',
+        '最小漲跌幅 (%)': f'≥ {min_price_chg_pct:+.1f}%' if min_price_chg_pct != 0 else '不限',
+    }
+    return df
+
+
 def _render_scan_tab():
     st.markdown("### 📊 全市場主力力道掃描")
     st.caption(
         "掃描「市值前 N 大 + 篩選條件」的個股，"
-        "計算「主力力道% = 融資淨買(股) / 成交量(股) × 100」，排名最高 30 檔。"
+        "計算各種主力力道指標，排名最高 30 檔。"
     )
-    # ⚠️ 三大法人限制說明
-    st.error(
-        "**⚠️ finlab 沒有三大法人 (外資/投信/自營商) 買賣超資料** "
-        "(實測 `institutional_investors:三大法人買賣超` 等 7 個欄位全部 not found)。\n\n"
-        "本頁用 **「融資買方力道」** 當代理指標，反映「槓桿交易者 (含投信基金、自營商避險、散戶融資)」的累積買盤方向。\n"
-        "雖非真正的三大法人，但能看出短期主力累積買盤方向。"
+
+    # 掃描類型 radio — 切換「融資代理 / 三大法人」
+    scan_type = st.radio(
+        "📊 掃描類型",
+        options=['融資代理 (融資買方力道)', '🏛️ 三大法人 (外資/投信/自營商)'],
+        index=0,
+        key="scan_type",
+        horizontal=True,
+        help=(
+            "融資代理 = 反映槓桿交易者 (含投信基金、自營商避險、散戶融資) 的累積買盤\n"
+            "三大法人 = finlab 真正的三大法人買賣超 (外資/投信/自營商 各自獨立排名)"
+        ),
+    )
+
+    if '三大法人' in scan_type:
+        _render_institutional_scan()
+    else:
+        _render_margin_scan()
+
+
+# ============================================================
+# 融資代理 scan UI (原本的 _render_scan_tab 主體)
+# ============================================================
+def _render_margin_scan():
+    st.info(
+        "💡 **融資代理指標**：當 finlab 沒有逐筆大單/內外盤資料時，"
+        "用「融資買方力道」當代理，反映「槓桿交易者」累積買盤方向。"
+        "⚠️ 無法區分投信 vs 自營 vs 散戶 (要看真正法人請切到「三大法人」tab)。"
     )
 
     # 排名依據 radio (預設當天)
@@ -761,3 +980,279 @@ def _render_scan_tab():
 - 低主力力道% + 高成交量 = 大戶用現金（非融資）買的，沒被這指標抓到
 - 集保庫存分級資料（早版錯誤指標）已棄用，那是「誰持有」週頻，不是「當天買賣」
 """)
+
+
+# ============================================================
+# 三大法人 scan UI (新功能)
+# ============================================================
+def _render_institutional_scan():
+    """三大法人買賣超 scan UI"""
+    st.success(
+        "✅ **真實三大法人資料** (finlab `institutional_investors_trading_summary:*`)。"
+        "資料從 2012-05-02 起，3,521 個交易日，2,699 檔個股。"
+    )
+
+    # 排名類型 (合計 / 個別)
+    inst_rank_type = st.radio(
+        "🏛️ 排名類型",
+        options=['合計 (三大法人)', '外資', '投信', '自營商'],
+        index=0,
+        key="inst_rank_type",
+        horizontal=True,
+        help=(
+            "合計 = 外資+投信+自營商 一起算\n"
+            "個別 = 各自獨立排名 (例如單看外資 10 日累計買超最多)"
+        ),
+    )
+    # 時間視角
+    time_window = st.radio(
+        "📅 時間視角",
+        options=['當天', '3 日累計', '5 日累計'],
+        index=0,
+        key="inst_time_window",
+        horizontal=True,
+    )
+
+    # ============ 控制面板 ============
+    with st.expander("⚙️ 篩選條件", expanded=True):
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            market_cap_top = st.selectbox(
+                "市值前幾大",
+                options=[100, 200, 300, 500, 1000],
+                index=2,
+                key="inst_mv_top",
+                help="用 etl:market_value 最新一日排序",
+            )
+            market_filter = st.multiselect(
+                "市場別",
+                options=['sii', 'otc'],
+                default=['sii', 'otc'],
+                key="inst_market",
+                format_func=lambda x: {'sii': '上市 (sii)', 'otc': '上櫃 (otc)'}.get(x, x),
+            )
+
+        with col2:
+            min_volume_lots = st.slider(
+                "📊 最小當日成交量 (張)",
+                min_value=0, max_value=50000, value=2000, step=500,
+                key="inst_min_vol",
+                help="過濾量能過小的個股，避免法人力道% 被虛胖",
+            )
+
+        with col3:
+            min_inst_net = st.number_input(
+                "🏛️ 最小三大法人合計淨買 (張)",
+                min_value=0, value=0, step=100,
+                key="inst_min_net",
+                help="預設 0 = 不限。設 500 = 只列三大法人合計淨買 ≥ 500 張",
+            )
+            min_price_chg = st.number_input(
+                "📈 最小漲跌幅 (%)",
+                min_value=-10.0, max_value=10.0, value=0.0, step=0.5,
+                key="inst_min_chg",
+                help="預設 0 = 含下跌。設 5 = 只列漲 ≥ 5%",
+            )
+
+        col_btn1, col_btn2, _ = st.columns([1, 1, 4])
+        with col_btn1:
+            run_btn = st.button("🚀 重新掃描", type="primary", key="inst_refresh")
+        with col_btn2:
+            def _apply_inst_preset():
+                st.session_state["inst_min_vol"] = 5000
+                st.session_state["inst_min_net"] = 500
+                st.session_state["inst_min_chg"] = 1.0
+            st.button(
+                "⭐ 用推薦條件",
+                key="inst_preset",
+                help="成交量 ≥ 5000 張 + 三大法人淨買 ≥ 500 張 + 漲 ≥ 1%",
+                on_click=_apply_inst_preset,
+            )
+
+    if not market_filter:
+        st.warning("請至少選一個市場")
+        return
+
+    if run_btn:
+        st.cache_data.clear()
+        st.rerun()
+
+    with st.spinner("掃描三大法人中…"):
+        df = _scan_institutional(
+            market_cap_top=market_cap_top,
+            min_volume_lots=min_volume_lots,
+            min_inst_net_lots=min_inst_net,
+            min_price_chg_pct=min_price_chg,
+            market_filter=tuple(market_filter),
+        )
+
+    if df.empty:
+        st.warning("沒有符合條件的個股，請放寬篩選條件")
+        return
+
+    # 決定排名欄位
+    type_col_map = {
+        ('合計 (三大法人)', '當天'): '三大法人力道%',
+        ('合計 (三大法人)', '3 日累計'): '三大法人力道3日%',
+        ('合計 (三大法人)', '5 日累計'): '三大法人力道5日%',
+        ('外資', '當天'): '外資力道%',
+        ('外資', '3 日累計'): '外資力道3日%',
+        ('外資', '5 日累計'): '外資力道5日%',
+        ('投信', '當天'): '投信力道%',
+        ('投信', '3 日累計'): '投信力道3日%',
+        ('投信', '5 日累計'): '投信力道5日%',
+        ('自營商', '當天'): '自營商力道%',
+        ('自營商', '3 日累計'): '自營商力道3日%',
+        ('自營商', '5 日累計'): '自營商力道5日%',
+    }
+    rank_col = type_col_map[(inst_rank_type, time_window)]
+    rank_title = f"{inst_rank_type} 力道% 排名 ({time_window})"
+
+    scan_date = df.attrs.get('scan_date', '?')
+    filter_summary = df.attrs.get('filter_summary', {})
+    filter_text = " ｜ ".join([f"{k}={v}" for k, v in filter_summary.items()])
+    st.caption(
+        f"📅 資料日期 **{scan_date}** ｜ 符合條件 **{len(df)} 檔**\n\n"
+        f"⚙️ {filter_text}"
+    )
+
+    # ============ 統計指標 ============
+    st.divider()
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("符合條件", f"{len(df)} 檔")
+    # 根據排名類型顯示對應統計
+    if inst_rank_type == '合計 (三大法人)':
+        stat_col = rank_col
+        stat_label = "三大法人力道"
+    elif inst_rank_type == '外資':
+        stat_col = rank_col
+        stat_label = "外資力道"
+    elif inst_rank_type == '投信':
+        stat_col = rank_col
+        stat_label = "投信力道"
+    else:
+        stat_col = rank_col
+        stat_label = "自營商力道"
+    m2.metric(f"{stat_label} ≥ 10%", f"{(df[stat_col] >= 10).sum()} 檔")
+    m3.metric(f"{stat_label} 5~10%", f"{((df[stat_col] >= 5) & (df[stat_col] < 10)).sum()} 檔")
+    m4.metric(f"平均{stat_label}", f"{df[stat_col].mean():.2f}%")
+    m5.metric(f"最高{stat_label}", f"{df[stat_col].max():.2f}%",
+              delta=df.iloc[0]['名稱'])
+
+    # ============ Top 30 排名 ============
+    df_sorted = df.sort_values(rank_col, ascending=False).reset_index(drop=True)
+
+    st.divider()
+    st.markdown(f"#### 🏆 {rank_title} (Top 30)")
+
+    top30 = df_sorted.head(30).copy()
+    fig_bar = go.Figure()
+    colors = ['#26a69a' if v >= 10 else '#42a5f5' if v >= 5 else '#ffa726'
+              for v in top30[rank_col]]
+    # 自訂 hover
+    if inst_rank_type == '合計 (三大法人)':
+        net_col = f'三大法人合計(張)' if time_window == '當天' else f'三大法人合計{time_window[0]}日累計(張)'
+        name_h = f"{inst_rank_type} 力道%"
+    else:
+        # 外資/投信/自營
+        if inst_rank_type == '外資':
+            net_col = f'外{inst_rank_type}買賣超(張)' if time_window == '當天' else f'外{inst_rank_type}{time_window[0]}日累計(張)'
+        elif inst_rank_type == '投信':
+            net_col = f'投信買賣超(張)' if time_window == '當天' else f'投信{time_window[0]}日累計(張)'
+        else:
+            net_col = f'自營商買賣超(張)' if time_window == '當天' else f'自營商{time_window[0]}日累計(張)'
+        name_h = f"{inst_rank_type} 力道%"
+
+    fig_bar.add_trace(go.Bar(
+        y=top30['名稱'] + ' (' + top30['stock_id'] + ')',
+        x=top30[rank_col],
+        orientation='h',
+        marker_color=colors,
+        text=[f"{v:.2f}%" for v in top30[rank_col]],
+        textposition='outside',
+        hovertemplate=(
+            f'%{{y}}<br>{name_h}: %{{x:.2f}}%<br>'
+            f'{inst_rank_type}淨買: %{{customdata[0]:+,}} 張<br>'
+            '成交量: %{customdata[1]:,} 張<extra></extra>'
+        ),
+        customdata=top30[[net_col, '成交量(張)']].values,
+    ))
+    fig_bar.update_layout(
+        height=700,
+        title=f"{rank_title} Top 30 (顏色: 🟢≥10% 🔵5-10% 🟠<5%)",
+        xaxis_title=rank_title,
+        yaxis=dict(autorange='reversed'),
+        margin=dict(l=120),
+    )
+    st.plotly_chart(fig_bar, width="stretch")
+
+    # ============ 明細表（含 4 個法人 × 3 時間視角） ============
+    st.markdown("#### 📋 完整明細表（4 法人 × 3 時間視角）")
+    display_cols = [
+        'stock_id', '名稱', '市場', '產業', '市值(億)',
+        '外資買賣超(張)', '投信買賣超(張)', '自營商買賣超(張)', '三大法人合計(張)',
+        '外資力道%', '投信力道%', '自營商力道%', '三大法人力道%',
+        '外資3日累計(張)', '投信3日累計(張)', '自營商3日累計(張)', '三大法人合計3日(張)',
+        '外資力道3日%', '投信力道3日%', '自營商力道3日%', '三大法人力道3日%',
+        '外資5日累計(張)', '投信5日累計(張)', '自營商5日累計(張)', '三大法人合計5日(張)',
+        '外資力道5日%', '投信力道5日%', '自營商力道5日%', '三大法人力道5日%',
+        '成交量(張)', '漲跌幅%',
+    ]
+    display_df = df[display_cols].copy()
+    # 格式化
+    for col in ['成交量(張)']:
+        display_df[col] = display_df[col].apply(lambda x: f"{int(x):,}")
+    for col in display_cols:
+        if '(張)' in col and col != '成交量(張)':
+            display_df[col] = display_df[col].apply(lambda x: f"{x:+,.1f}")
+        elif '力道%' in col:
+            display_df[col] = display_df[col].apply(lambda x: f"{x:+.2f}%")
+    display_df['漲跌幅%'] = display_df['漲跌幅%'].apply(lambda x: f"{x:+.2f}%")
+    st.dataframe(display_df, hide_index=True, width="stretch", height=600)
+
+    # ============ CSV 下載 ============
+    csv_bytes = df.to_csv(index=False).encode("utf-8-sig")
+    st.download_button(
+        label=f"⬇️ 下載三大法人掃描 ({len(df)} 檔 CSV)",
+        data=csv_bytes,
+        file_name=f"three_inst_scan_{scan_date.replace('-', '')}.csv",
+        mime="text/csv",
+        key="inst_download_csv",
+    )
+
+    # ============ 公式說明 ============
+    with st.expander("📐 法人力道% 公式 & 資料來源"):
+        st.markdown("""
+### 三大法人力道 % 公式
+
+```
+法人力道% = 法人淨買(股) / 成交量(股) × 100
+         = 法人買賣超(股) / 成交量(股) × 100
+         = 法人買賣超(張) / 成交量(張) × 100  (張 = 1000 股)
+```
+
+### 解讀
+
+| 法人力道% | 意義 |
+|---|---|
+| **≥ 10%** | 🔥 法人主導 — 當日該法人買盤佔成交 10% 以上 |
+| **5% ~ 10%** | 💪 中度法人 — 法人買盤是當日主要驅動力之一 |
+| **2% ~ 5%** | 👀 輕度法人 — 法人買盤輕微，但方向正向 |
+| **< 2%** | 📊 微量法人 — 法人買盤不顯著 |
+
+### 資料來源
+
+| 法人類別 | finlab key | 原始單位 | 備註 |
+|---|---|---|---|
+| **外資** | `institutional_investors_trading_summary:外陸資買賣超股數(不含外資自營商)` | 股 | 不含外資自營商 (避險) |
+| **投信** | `institutional_investors_trading_summary:投信買賣超股數` | 股 | 投信發行基金 |
+| **自營商** | `institutional_investors_trading_summary:自營商買賣超股數(自行買賣)` | 股 | 券商自有資金 (不含避險) |
+
+### ⚠️ 注意
+
+- 「法人力道%」反映的是「法人買盤佔當日成交的比重」，**不是資金總量**
+- **必須搭配成交量門檻看**：高力道% + 低成交量 = 法人掛單沒人接（小心冷門股虛胖）
+- 低力道% + 高成交量 = 大戶用現金（非融資）買的，沒被這指標抓到
+- 個股「三大法人合計」= 外資 + 投信 + 自營商 (不含外資自營商避險、券商避險)
+""")
+

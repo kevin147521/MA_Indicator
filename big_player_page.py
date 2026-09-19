@@ -73,6 +73,50 @@ def _cached_security_names() -> dict:
     return dict(zip(secs['stock_id'].astype(str), secs['name']))
 
 
+@st.cache_data(ttl=600, show_spinner="抓個股收盤價+漲跌…")
+def _cached_security_with_price() -> dict:
+    """
+    回傳 dict: stock_id -> {name, close, change_pct, change_sign}
+    close = 當日收盤價
+    change_pct = 當日漲跌 %
+    change_sign = 🟢 (漲) / 🔴 (跌) / ⚪ (持平)
+    """
+    from finlab import data as _d
+    secs = get_all_securities()
+    secs['stock_id'] = secs['stock_id'].astype(str)
+    name_map = dict(zip(secs['stock_id'], secs['name']))
+
+    close = _d.get('price:收盤價')
+    last_idx = close.index.get_loc(close.index[-1])
+    close_today = close.iloc[last_idx]
+    close_yest = close.iloc[max(0, last_idx - 1)]
+
+    # 對齊 stock_id
+    close_today.index = close_today.index.astype(str)
+    close_yest.index = close_yest.index.astype(str)
+
+    out = {}
+    for sid in secs['stock_id']:
+        c = float(close_today.get(sid, 0)) if sid in close_today.index else 0
+        y = float(close_yest.get(sid, 0)) if sid in close_yest.index else 0
+        if c == 0 or y == 0:
+            continue
+        pct = (c / y - 1) * 100
+        if pct > 0.001:
+            sign = "🟢"
+        elif pct < -0.001:
+            sign = "🔴"
+        else:
+            sign = "⚪"
+        out[sid] = {
+            'name': name_map.get(sid, '?'),
+            'close': c,
+            'change_pct': pct,
+            'change_sign': sign,
+        }
+    return out
+
+
 # ============================================================
 # Page render — 兩大 tab
 # ============================================================
@@ -101,23 +145,36 @@ def render_big_player_page():
 # ============================================================
 def _render_individual_tab():
     name_map = _cached_security_names()
-    POPULAR = {
-        "2330 台積電": "2330",
-        "2317 鴻海": "2317",
-        "2454 聯發科": "2454",
-        "2308 台達電": "2308",
-        "2603 長榮": "2603",
-        "3529 力旺": "3529",
-        "6488 環球晶": "6488",
-        "8996 高力": "8996",
-        "4979 華星光": "4979",
-        "2409 友達": "2409",
-    }
-    POPULAR_LABELS = list(POPULAR.keys())
+    price_map = _cached_security_with_price()  # stock_id -> {name, close, change_pct, change_sign}
 
-    all_stocks = [(sid, name) for sid, name in name_map.items() if name]
+    def _fmt_option(sid: str, default_name: str = None) -> str:
+        """格式化個股選項: "台積電 (2330) ¥1,025 +4.67% 🟢" """
+        if sid in price_map:
+            p = price_map[sid]
+            return f"{p['name']} ({sid}) ¥{p['close']:,.0f} {p['change_pct']:+.2f}% {p['change_sign']}"
+        # 沒抓到價的 fallback
+        return f"{default_name or '?'} ({sid})"
+
+    POPULAR = {
+        "2330": "台積電",
+        "2317": "鴻海",
+        "2454": "聯發科",
+        "2308": "台達電",
+        "2603": "長榮",
+        "3529": "力旺",
+        "6488": "環球晶",
+        "8996": "高力",
+        "4979": "華星光",
+        "2409": "友達",
+    }
+    POPULAR_SIDS = list(POPULAR.keys())
+    POPULAR_OPTIONS = [_fmt_option(sid, POPULAR[sid]) for sid in POPULAR_SIDS]
+
+    # 全市場前 300 大（按代號排序）
+    all_stocks = [(sid, info['name']) for sid, info in price_map.items() if info['name']]
     all_stocks_sorted = sorted(all_stocks, key=lambda x: int(x[0]) if x[0].isdigit() else 99999)
-    options = POPULAR_LABELS + [f"{sid} {name}" for sid, name in all_stocks_sorted[:300]]
+    ALL_OPTIONS = [_fmt_option(sid, name) for sid, name in all_stocks_sorted[:300]]
+    options = POPULAR_OPTIONS + ALL_OPTIONS
 
     col_pick, col_range = st.columns([2, 1])
     with col_pick:
@@ -129,11 +186,14 @@ def _render_individual_tab():
             index=default_idx,
             key="bp_stock_select",
         )
-        if selected < len(POPULAR_LABELS):
-            stock_id = POPULAR[POPULAR_LABELS[selected]]
-            label = POPULAR_LABELS[selected]
+        if selected < len(POPULAR_SIDS):
+            stock_id = POPULAR_SIDS[selected]
+            label = options[selected]  # 含價/漲跌的完整字串
         else:
-            stock_id = options[selected].split(" ")[0]
+            # ALL_OPTIONS 格式: "台積電 (2330) ¥1,025 +4.67% 🟢" — 從 (...) 抓 sid
+            import re as _re
+            m = _re.search(r'\((\d+)\)', options[selected])
+            stock_id = m.group(1) if m else options[selected].split(" ")[0]
             label = options[selected]
 
     with col_range:
@@ -173,9 +233,21 @@ def _render_individual_tab():
     last = view.iloc[-1]
     prev = view.iloc[-2] if len(view) > 1 else last
 
+    # 從 label 拆出中文名稱 (去掉 ¥ 漲跌 後綴)
+    import re as _re
+    name_match = _re.match(r'^(.+?)\s*\(\d+\)', label)
+    display_name = name_match.group(1) if name_match else label
+
     # ============ metric cards ============
     st.divider()
-    st.markdown(f"### 📊 {label} — 主力訊號 ({last['date'].strftime('%Y-%m-%d')})")
+    st.markdown(f"### 📊 {display_name} ({stock_id}) — 主力訊號 ({last['date'].strftime('%Y-%m-%d')})")
+    # 顯示當前股價/漲跌 (從 price_map 抓最新)
+    if stock_id in price_map:
+        p = price_map[stock_id]
+        st.markdown(
+            f"**最新收盤：¥{p['close']:,.2f}** ｜ "
+            f"**漲跌：{p['change_pct']:+.2f}% {p['change_sign']}**"
+        )
 
     mc = st.columns(5)
     mc[0].metric("融資買進", f"{last['融資買進(張)']:,.0f} 張",
@@ -898,27 +970,46 @@ def _render_margin_scan():
     st.markdown(f"#### 🏆 {rank_by} 排名 (Top 30)")
 
     top30 = df_sorted.head(30).copy()
+    # 加上股價/漲跌到 y-axis label
+    price_map = _cached_security_with_price()
+    def _bar_label(sid, name):
+        return f"{name} ({sid})"
+    bar_labels = [_bar_label(r['stock_id'], r['名稱']) for _, r in top30.iterrows()]
+    # 抓每個 bar 的 hover info (含股價/漲跌)
+    hover_prices = []
+    for _, r in top30.iterrows():
+        sid = r['stock_id']
+        if sid in price_map:
+            p = price_map[sid]
+            hover_prices.append(f"¥{p['close']:,.0f} ({p['change_pct']:+.2f}% {p['change_sign']})")
+        else:
+            hover_prices.append("")
+
     # Plotly horizontal bar
     fig_bar = go.Figure()
     colors = ['#26a69a' if v >= 10 else '#42a5f5' if v >= 5 else '#ffa726'
               for v in top30[rank_col]]
     fig_bar.add_trace(go.Bar(
-        y=top30['名稱'] + ' (' + top30['stock_id'] + ')',
+        y=bar_labels,
         x=top30[rank_col],
         orientation='h',
         marker_color=colors,
         text=[f"{v:.2f}%" for v in top30[rank_col]],
         textposition='outside',
         hovertemplate=(
-            f'%{{y}}<br>{rank_by}: %{{x:.2f}}%<br>'
+            '<b>%{customdata[2]} (%{customdata[3]})</b><br>'
+            f'收盤: %{{customdata[4]}}<br>'
+            f'{rank_by}: %{{x:.2f}}%<br>'
             '融資淨買: %{customdata[0]:+,} 張<br>'
             '成交量: %{customdata[1]:,} 張<extra></extra>'
         ),
-        customdata=top30[['融資淨買(張)', '成交量(張)']].values,
+        customdata=top30[['融資淨買(張)', '成交量(張)', '名稱', 'stock_id']].assign(
+            _=hover_prices
+        ).values,
     ))
     fig_bar.update_layout(
-        height=700,
-        title=f"{rank_by} 排名 Top 30 (顏色: 🟢≥10% 🔵5-10% 🟠<5%)",
+        height=800,
+        title=f"{rank_by} 排名 Top 30 (hover 看股價/漲跌) (顏色: 🟢≥10% 🔵5-10% 🟠<5%)",
         xaxis_title=rank_by,
         yaxis=dict(autorange='reversed'),
         margin=dict(l=120),
@@ -1146,6 +1237,20 @@ def _render_institutional_scan():
     st.markdown(f"#### 🏆 {rank_title} (Top 30)")
 
     top30 = df_sorted.head(30).copy()
+    # 加上股價/漲跌到 y-axis label (hover 顯示)
+    price_map = _cached_security_with_price()
+    def _bar_label(sid, name):
+        return f"{name} ({sid})"
+    bar_labels = [_bar_label(r['stock_id'], r['名稱']) for _, r in top30.iterrows()]
+    hover_prices = []
+    for _, r in top30.iterrows():
+        sid = r['stock_id']
+        if sid in price_map:
+            p = price_map[sid]
+            hover_prices.append(f"¥{p['close']:,.0f} ({p['change_pct']:+.2f}% {p['change_sign']})")
+        else:
+            hover_prices.append("")
+
     fig_bar = go.Figure()
     colors = ['#26a69a' if v >= 10 else '#42a5f5' if v >= 5 else '#ffa726'
               for v in top30[rank_col]]
@@ -1164,22 +1269,26 @@ def _render_institutional_scan():
         name_h = f"{inst_rank_type} 力道%"
 
     fig_bar.add_trace(go.Bar(
-        y=top30['名稱'] + ' (' + top30['stock_id'] + ')',
+        y=bar_labels,
         x=top30[rank_col],
         orientation='h',
         marker_color=colors,
         text=[f"{v:.2f}%" for v in top30[rank_col]],
         textposition='outside',
         hovertemplate=(
-            f'%{{y}}<br>{name_h}: %{{x:.2f}}%<br>'
+            '<b>%{customdata[2]} (%{customdata[3]})</b><br>'
+            f'收盤: %{{customdata[4]}}<br>'
+            f'{name_h}: %{{x:.2f}}%<br>'
             f'{inst_rank_type}淨買: %{{customdata[0]:+,}} 張<br>'
             '成交量: %{customdata[1]:,} 張<extra></extra>'
         ),
-        customdata=top30[[net_col, '成交量(張)']].values,
+        customdata=top30[[net_col, '成交量(張)', '名稱', 'stock_id']].assign(
+            _=hover_prices
+        ).values,
     ))
     fig_bar.update_layout(
-        height=700,
-        title=f"{rank_title} Top 30 (顏色: 🟢≥10% 🔵5-10% 🟠<5%)",
+        height=800,
+        title=f"{rank_title} Top 30 (hover 看股價/漲跌) (顏色: 🟢≥10% 🔵5-10% 🟠<5%)",
         xaxis_title=rank_title,
         yaxis=dict(autorange='reversed'),
         margin=dict(l=120),

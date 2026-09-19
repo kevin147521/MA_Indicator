@@ -1,20 +1,64 @@
 #!/opt/anaconda3/envs/finlab3/bin/python
 # coding: utf-8
 """
-big_player.py — 大戶買賣力指標（從 FinLab 集保公開資料推算）
+big_player.py — 主力訊號指標（從 FinLab 融資買賣公開資料推算）
 
-⚠️ 重要說明
-============
-finlab 公開資料只有 inventory（集保庫存分級）+ price/volume，
-**沒有逐筆「特大單/大單/中單/小單」資料**。
+⚠️ 重要說明 (2026-09-19 重寫)
+===============================
+原始「主力 / 大戶買賣力」定義 = **當天逐筆內外盤方向**
+(外盤量 - 內盤量) 或「特大單+大單 買進 - 賣出」。
 
-本模組用以下代理指標估算「大戶買賣力」：
-- 大戶 (持股分級 12-15) 週頻持有股數變化 ＝ 大戶週淨買股數
-- 大戶買賣比 (%) ＝ 大戶淨買 / (大戶淨買 + 大戶淨賣) 的絕對值
-- 大戶差比 (%)   ＝ (大戶淨買 - 大戶淨賣) / 該週成交量 × 100
-- 大戶買賣力 (代理) ＝ 5 週累計淨買股數 × 換手率加權
+**finlab 公開資料有以下限制**（實測 2026-09-19 確認）：
+- ❌ `price:內外盤` / `price:外盤量` / `price:內盤量`  → not found
+- ❌ `institutional_investors:三大法人買賣超` / 外資買賣超 / 投信 / 自營商 → not found
+- ❌ `institutional_investors:借券` → not found
+- ❌ `margin_transactions:融資餘額` / `融券餘額` → not found
 
-⚠️ 指標僅供研究參考，跟券商逐筆大單資料會有差異。
+**唯一可用的「日頻買賣方向」資料：**
+- ✅ `margin_transactions:融資買進` (2480 檔, 4348 天)
+- ✅ `margin_transactions:融資賣出`
+- ✅ `margin_transactions:融券買進`
+- ✅ `margin_transactions:融券賣出`
+
+融資 = 投資人借錢買股票（加槓桿看多），所以：
+- 融資淨買 > 0 → 槓桿買方加碼（視為「主力加碼」訊號）
+- 融資淨買 < 0 → 槓桿買方還錢 / 停損賣出（視為「主力撤離」訊號）
+- 融券淨增 > 0 → 放空者加碼（與融資反向）
+
+⚠️ 此為**代理指標**，跟券商逐筆大單資料會有差異，僅供研究參考。
+   集保 (inventory) 是「誰持有」週頻資料，不是「當天買賣」日頻方向，
+   早期版本誤用集保當大戶買賣力代理是錯誤的，本版已修正。
+
+指標定義
+--------
+1. **融資淨買 (張)** = 融資買進 - 融資賣出
+   - 正：槓桿買方當天加碼
+   - 負：槓桿買方當天賣出 / 還錢
+
+2. **融資買賣比 %** = 融資買進 / (融資買進 + 融資賣出) × 100
+   - 50% = 平衡, >50% = 買方主導, <50% = 賣方主導
+   - 反映「當天融資交易中買方 vs 賣方的相對力道」
+
+3. **融資力 % (5日累計代理)** = 5日累計融資淨買 / 5日累計成交量 × 100
+   - 短期主力 (槓桿買方) 籌碼累積方向
+
+4. **融券淨增 (張)** = 融券賣出 - 融券買進
+   - 正：放空者加碼
+   - 負：空單回補 / 軋空
+
+5. **融資力 5 日累計淨買 (張)** = 5日累計融資淨買 (絕對張數)
+
+訊號分類 (基於「融資力 X 融資買賣比」象限)：
+- 🟢 主力進場:  融資力 > +1.5% AND 買賣比 > 55%
+- 🔵 主力調節:  融資力 > +1.5% AND 買賣比 ≤ 55%
+- 🟠 主力減碼:  -1.5% ≤ 融資力 ≤ +1.5% AND 買賣比 > 60% (買方強但加碼速度放緩)
+- 🔴 主力撤離:  融資力 < -1.5%
+- ⚪ 盤整觀望:  其他
+
+強弱判斷 (基於融資買賣比)：
+- 🟢 買方強勢: > 60%
+- 🟡 中性:    40% ~ 60%
+- 🔴 賣方強勢: < 40%
 """
 from __future__ import annotations
 
@@ -28,34 +72,28 @@ from finlab import data
 
 
 # ============================================================
-# 0. 集保庫存 → 大戶週頻持有股數
+# 0. 抓融資買賣 / 融券 資料 (4 個欄位)
 # ============================================================
-def _get_big_holder_weekly(stock_id: str) -> pd.DataFrame:
+def _get_margin_data():
     """
-    從 finlab inventory 抽大戶 (持股分級 12-15) 週頻資料：
-    columns: date, 人數, 持有股數, 占集保庫存數比例
+    抓 4 個欄位，回傳 dict of DataFrame (columns=stock_id, index=date)
+
+    ⚠️ Streamlit cache 在 page 端用，這裡不包避免 module-level import streamlit
     """
-    inv = data.get('inventory')
-    inv = inv.copy()
-    inv['持股分級'] = pd.to_numeric(inv['持股分級'], errors='coerce').astype('Int64')
-
-    # 大戶 = 12-15 (約 400 張以上)
-    big = inv[inv['持股分級'].between(12, 15, inclusive='both')]
-    s = big[big['stock_id'] == stock_id]
-
-    if s.empty:
-        return pd.DataFrame(columns=['date', '人數', '持有股數', '占集保庫存數比例'])
-
-    weekly = s.groupby('date').agg({
-        '人數': 'sum',
-        '持有股數': 'sum',
-        '占集保庫存數比例': 'sum',
-    }).reset_index().sort_values('date')
-    return weekly.reset_index(drop=True)
+    margin_buy = data.get('margin_transactions:融資買進')   # 融資買進 (張)
+    margin_sell = data.get('margin_transactions:融資賣出')  # 融資賣出 (張)
+    short_buy = data.get('margin_transactions:融券買進')    # 融券買進 (張) — 空單回補
+    short_sell = data.get('margin_transactions:融券賣出')   # 融券賣出 (張) — 新增放空
+    return {
+        'margin_buy': margin_buy,
+        'margin_sell': margin_sell,
+        'short_buy': short_buy,
+        'short_sell': short_sell,
+    }
 
 
 def _get_volume(stock_id: str) -> pd.Series:
-    """個股成交股數"""
+    """個股成交股數（不是張！）"""
     vol = data.get('price:成交股數')
     if stock_id in vol.columns:
         return vol[stock_id].dropna()
@@ -63,124 +101,149 @@ def _get_volume(stock_id: str) -> pd.Series:
 
 
 # ============================================================
-# 1. 大戶週頻淨買股數
+# 1. 日頻融資買賣指標
 # ============================================================
 def calc_big_player_weekly(stock_id: str) -> pd.DataFrame:
     """
-    計算個股大戶週頻指標
-    columns: date, 大戶人數, 大戶持有股數, 大戶持股比例, 成交量, 大戶淨買股數,
-             大戶買賣比%, 大戶差比%, 大戶買賣力_代理
+    計算個股主力訊號（日頻）
+
+    ⚠️ 函數名保留舊名 `calc_big_player_weekly` 為相容性，實際指標是日頻。
+
+    columns: date,
+             融資買進(張), 融資賣出(張), 融資淨買(張),
+             融資買賣比%, 成交量(股),
+             融資力_5日累計%, 融資力_5日累計淨買(張),
+             融券買進(張), 融券賣出(張), 融券淨增(張),
+             訊號, 強弱
+
+    Returns empty DataFrame if stock_id not in 融資買進 columns
     """
-    weekly = _get_big_holder_weekly(stock_id)
-    if weekly.empty:
-        return weekly
+    md = _get_margin_data()
+    mb: pd.DataFrame = md['margin_buy']
+    ms: pd.DataFrame = md['margin_sell']
+    sb: pd.DataFrame = md['short_buy']
+    ss: pd.DataFrame = md['short_sell']
 
-    weekly = weekly.set_index('date')
-    weekly['大戶淨買股數'] = weekly['持有股數'].diff()  # 正=買超, 負=賣超
-    weekly['大戶淨買比例_pp'] = weekly['占集保庫存數比例'].diff() * 100  # pp
+    if stock_id not in mb.columns:
+        return pd.DataFrame()
 
-    # 對齊成交量（週頻總和）— 用 W-FRI 對齊 inventory 的週五日期
+    margin_buy = mb[stock_id].dropna()
+    margin_sell = ms[stock_id].dropna() if stock_id in ms.columns else pd.Series(0, index=margin_buy.index)
+    short_buy_s = sb[stock_id].dropna() if stock_id in sb.columns else pd.Series(0, index=margin_buy.index)
+    short_sell_s = ss[stock_id].dropna() if stock_id in ss.columns else pd.Series(0, index=margin_buy.index)
+
+    df = pd.DataFrame({
+        'date': margin_buy.index,
+        '融資買進(張)': margin_buy.values,
+        '融資賣出(張)': margin_sell.reindex(margin_buy.index, fill_value=0).values,
+        '融券買進(張)': short_buy_s.reindex(margin_buy.index, fill_value=0).values,
+        '融券賣出(張)': short_sell_s.reindex(margin_buy.index, fill_value=0).values,
+    })
+    df['融資淨買(張)'] = df['融資買進(張)'] - df['融資賣出(張)']
+    df['融券淨增(張)'] = df['融券賣出(張)'] - df['融券買進(張)']
+
+    # 融資買賣比 % — 反映當天融資交易中買賣雙方力道
+    total_margin = df['融資買進(張)'] + df['融資賣出(張)']
+    df['融資買賣比%'] = np.where(
+        total_margin > 0,
+        df['融資買進(張)'] / total_margin * 100,
+        50.0  # 沒融資交易 → 當平衡
+    )
+
+    # 對齊成交量（日頻，不 resample）
     vol = _get_volume(stock_id)
-    weekly_vol = vol.resample('W-FRI').sum().to_frame('成交量')
-    weekly = weekly.join(weekly_vol, how='left')
-    weekly['成交量'] = weekly['成交量'].fillna(0)
+    vol = vol.reindex(df['date'], fill_value=0)
+    df['成交量(股)'] = vol.values
 
-    # 大戶買賣比 (%)：大戶活動度 = |淨買| / 成交量（越接近 100 代表大戶越活躍）
-    weekly['大戶買賣比%'] = np.where(
-        weekly['成交量'] > 0,
-        weekly['大戶淨買股數'].abs() / weekly['成交量'] * 100,
+    # 融資力 5 日累計代理指標
+    net_5d = df['融資淨買(張)'].rolling(5).sum()
+    vol_5d = df['成交量(股)'].rolling(5).sum()
+    # 融資淨買單位是「張」, 成交量單位是「股」, 要先把淨買轉成股 (×1000)
+    df['融資力_5日累計%'] = np.where(
+        vol_5d > 0,
+        net_5d * 1000 / vol_5d * 100,  # 淨買(張) × 1000 = 股
         0
     )
+    df['融資力_5日累計淨買(張)'] = net_5d
 
-    # 大戶差比 (%)：方向 = 淨買 / 成交量（正=大戶買超，負=大戶賣超）
-    weekly['大戶差比%'] = np.where(
-        weekly['成交量'] > 0,
-        weekly['大戶淨買股數'] / weekly['成交量'] * 100,  # 帶正負號
-        0
+    # 訊號 + 強弱
+    df['訊號'] = df.apply(
+        lambda r: classify_signal(r['融資力_5日累計%'], r['融資買賣比%']),
+        axis=1
     )
+    df['強弱'] = df['融資買賣比%'].apply(classify_strength)
 
-    # 大戶買賣力 (代理)：5 週累計淨買股數 / 5 週累計成交量
-    net_5w = weekly['大戶淨買股數'].rolling(5).sum()
-    vol_5w = weekly['成交量'].rolling(5).sum()
-    weekly['大戶買賣力_代理%'] = np.where(
-        vol_5w > 0,
-        net_5w / vol_5w * 100,
-        0
-    )
+    return df.reset_index(drop=True)
 
-    return weekly.reset_index()
+
+# 為了 page 端 import 方便，別名
+calc_main_force_daily = calc_big_player_weekly
 
 
 # ============================================================
-# 2. 判斷族群訊號 (領先/改善/落後/弱化)
+# 2. 訊號分類 (基於「融資力 X 融資買賣比」象限)
 # ============================================================
-def classify_signal(big_buy_ratio: float, big_diff_ratio: float) -> str:
+def classify_signal(margin_force_pct: float, margin_buy_ratio: float) -> str:
     """
-    根據「大戶買賣比」(主力參與程度 X) 與「大戶差比」(買超力道 Y) 分類：
-    - 領先區 (Leading):  X ≥ 70% AND Y ≥ 20%
-    - 改善區 (Improving): X < 70% AND Y ≥ 20%
-    - 弱化區 (Weakening): X ≥ 70% AND Y < 20%
-    - 落後區 (Lagging):  X < 70% AND Y < 20%
-
     Parameters
     ----------
-    big_buy_ratio : float (%) - 大戶買賣比
-    big_diff_ratio : float (%) - 大戶差比（取絕對值）
+    margin_force_pct : float (%) - 融資力 5日累計代理 (5日淨買 / 5日成交量 × 100)
+    margin_buy_ratio : float (%) - 融資買賣比 (融資買進 / (融資買進+融資賣出) × 100)
     """
-    # 差比用絕對值（看買超或賣超的力道）
-    y = abs(big_diff_ratio)
-    x = big_buy_ratio
-    if x >= 70 and y >= 20:
-        return "🟢 領先區 (Leading)"
-    elif x < 70 and y >= 20:
-        return "🔵 改善區 (Improving)"
-    elif x >= 70 and y < 20:
-        return "🟠 弱化區 (Weakening)"
+    x = margin_buy_ratio    # 當天買賣力道
+    y = margin_force_pct    # 5 日累計方向
+
+    if y > 1.5 and x > 55:
+        return "🟢 主力進場"
+    elif y > 1.5 and x <= 55:
+        return "🔵 主力調節"
+    elif -1.5 <= y <= 1.5 and x > 60:
+        return "🟠 主力減碼"
+    elif y < -1.5:
+        return "🔴 主力撤離"
     else:
-        return "🔴 落後區 (Lagging)"
+        return "⚪ 盤整觀望"
 
 
 # ============================================================
-# 3. 強度判斷 (基於大戶差比)
+# 3. 強弱判斷 (基於融資買賣比)
 # ============================================================
-def classify_strength(diff_ratio: float) -> str:
+def classify_strength(buy_ratio: float) -> str:
     """
-    根據大戶差比判斷強弱：
-    - 強勢 (>20% 買超)
-    - 中性 (-20% ~ 20%)
-    - 弱勢 (<-20% 賣超)
+    融資買賣比 > 60%  → 買方強勢
+    40% ~ 60%        → 中性
+    < 40%             → 賣方強勢
     """
-    if diff_ratio > 20:
-        return "🟢 強勢（買超力道強）"
-    elif diff_ratio < -20:
-        return "🔴 弱勢（賣超力道強）"
+    if buy_ratio > 60:
+        return "🟢 買方強勢"
+    elif buy_ratio < 40:
+        return "🔴 賣方強勢"
     else:
-        return "🟡 中性（接近平衡）"
+        return "🟡 中性"
 
 
 # ============================================================
-# 4. 主動抓多檔個股比較 (optional)
+# 4. 多檔個股比較
 # ============================================================
 def compare_stocks(stock_ids: list[str]) -> pd.DataFrame:
-    """多檔個股的最新一週大戶指標比較"""
+    """多檔個股的最新一日主力指標比較"""
     rows = []
     for sid in stock_ids:
         try:
-            weekly = calc_big_player_weekly(sid)
-            if weekly.empty or len(weekly) < 2:
+            df = calc_big_player_weekly(sid)
+            if df.empty or len(df) < 2:
                 rows.append({'stock_id': sid, 'data': False})
                 continue
-            last = weekly.iloc[-1]
-            prev = weekly.iloc[-2]
-            delta = last['大戶淨買股數'] - prev['大戶淨買股數']
+            last = df.iloc[-1]
+            prev = df.iloc[-2]
             rows.append({
                 'stock_id': sid,
                 'data': True,
-                '最新大戶持股%': last['占集保庫存數比例'],
-                '本週淨買股數': last['大戶淨買股數'],
-                '本週大戶買賣比%': last['大戶買賣比%'],
-                '本週大戶差比%': last['大戶差比%'],
-                '訊號': classify_signal(last['大戶買賣比%'], last['大戶差比%']),
+                '最新融資淨買(張)': last['融資淨買(張)'],
+                '最新融資買賣比%': last['融資買賣比%'],
+                '融資力_5日累計%': last['融資力_5日累計%'],
+                '訊號': last['訊號'],
+                '強弱': last['強弱'],
             })
         except Exception as e:
             rows.append({'stock_id': sid, 'data': False, 'error': str(e)})

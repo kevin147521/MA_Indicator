@@ -47,6 +47,7 @@ from barchart_engine import (
     FALLING_COLOR,
 )
 from portfolio_strategy_page import render_portfolio_page
+from big_player_page import render_big_player_page
 
 
 # ============================================================
@@ -100,7 +101,7 @@ with st.sidebar:
     st.header("📑 頁面")
     page = st.radio(
         "選擇功能",
-        ["📈 均線預測", "🗺️ 市值漲跌地圖", "📊 主動 ETF 持股", "📊 被動 ETF 追蹤", "🔍 均線收復", "🧪 跌破站回回測", "💰 融資維持率", "🧬 基因策略組合", "🔄 資料更新"],
+        ["📈 均線預測", "🗺️ 市值漲跌地圖", "📊 主動 ETF 持股", "📊 被動 ETF 追蹤", "🔍 均線收復", "🧪 跌破站回回測", "💰 融資維持率", "🧬 基因策略組合", "💰 大戶買賣力", "🔄 資料更新"],
         label_visibility="collapsed",
         key="page_selector",
     )
@@ -584,6 +585,14 @@ if page == "📊 被動 ETF 追蹤":
 # ============================================================
 if page == "🧬 基因策略組合":
     render_portfolio_page()
+    st.stop()
+
+
+# ============================================================
+# 大戶買賣力頁面（從 FinLab inventory 集保資料推算）
+# ============================================================
+if page == "💰 大戶買賣力":
+    render_big_player_page()
     st.stop()
 
 

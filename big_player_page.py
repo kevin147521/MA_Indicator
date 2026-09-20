@@ -963,13 +963,268 @@ def _scan_institutional(market_cap_top: int = 300,
     return df
 
 
-def _render_scan_tab():
-    st.markdown("### 📊 全市場主力力道掃描")
-    st.caption(
-        "掃描「市值前 N 大 + 篩選條件」的個股，"
-        "計算各種主力力道指標，排名最高 30 檔。"
+# ============================================================
+# 整體市值排名 scan (純台股結構，無篩選)
+# ============================================================
+@st.cache_data(ttl=1800, show_spinner="抓整體市值前 N 大...")
+def _scan_market_cap_ranking(top_n: int = 100,
+                             market_filter: tuple = ('sii', 'otc')) -> pd.DataFrame:
+    """
+    純按市值排序的台股排行榜
+
+    顯示: 排名 / 代號 / 名稱 / 市場 / 產業 / 市值 / 收盤價 / 漲跌 / 成交量 / 量增 / 三大法人力道%
+    不套用任何「主力進場」篩選 — 純台股結構視角
+    """
+    secs = get_all_securities()
+    pure_secs = secs[secs['market'].isin(list(market_filter))].copy()
+    pure_secs['stock_id'] = pure_secs['stock_id'].astype(str)
+
+    # 市值
+    mv = _finlab_data.get('etl:market_value')
+    mv_last = mv.iloc[-1]
+    last_date = mv.index[-1]
+    mv_last.index = mv_last.index.astype(str)
+    mv_pure = mv_last[mv_last.index.isin(pure_secs['stock_id'])].dropna()
+    mv_top = mv_pure.nlargest(top_n)
+
+    df = pd.DataFrame({
+        '排名': range(1, len(mv_top) + 1),
+        'stock_id': mv_top.index,
+        '市值(億)': (mv_top.values / 1e8).round(1),
+    })
+
+    # 名稱 / 市場 / 產業
+    name_map = dict(zip(pure_secs['stock_id'], pure_secs['name']))
+    market_map = dict(zip(pure_secs['stock_id'], pure_secs['market']))
+    df['名稱'] = df['stock_id'].map(name_map).fillna('?')
+    df['市場'] = df['stock_id'].map(market_map).fillna('?')
+
+    basic = _finlab_data.get('company_basic_info')
+    basic['stock_id'] = basic['stock_id'].astype(str)
+    industry_map = dict(zip(basic['stock_id'], basic['產業類別']))
+    df['產業'] = df['stock_id'].map(industry_map).fillna('?')
+
+    # 收盤價 + 漲跌幅%
+    price_map = _cached_security_with_price()
+    df['收盤價'] = df['stock_id'].map(price_map).apply(
+        lambda x: x.get('close', 0) if isinstance(x, dict) else 0
+    )
+    df['漲跌幅%'] = df['stock_id'].map(price_map).apply(
+        lambda x: x.get('change_pct', 0) if isinstance(x, dict) else 0
     )
 
+    # 成交量 + 量增 (5 種)
+    vol = _finlab_data.get('price:成交股數')
+    last_vol_idx = vol.index.get_loc(last_date)
+    vol_1d = vol.iloc[last_vol_idx]; vol_1d.index = vol_1d.index.astype(str)
+    vol_prev1d = vol.iloc[max(0, last_vol_idx - 1)]
+    vol_prev1d.index = vol_prev1d.index.astype(str)
+    vol_prev3d = vol.iloc[max(0, last_vol_idx - 5):max(0, last_vol_idx - 2)].sum() if last_vol_idx - 2 >= 0 else vol_1d
+    vol_prev3d.index = vol_prev3d.index.astype(str)
+    vol_prev5d = vol.iloc[max(0, last_vol_idx - 9):max(0, last_vol_idx - 4)].sum() if last_vol_idx - 4 >= 0 else vol_1d
+    vol_prev5d.index = vol_prev5d.index.astype(str)
+    vol_3d = vol.iloc[max(0, last_vol_idx - 2):last_vol_idx + 1].sum()
+    vol_3d.index = vol_3d.index.astype(str)
+    vol_5d = vol.iloc[max(0, last_vol_idx - 4):last_vol_idx + 1].sum()
+    vol_5d.index = vol_5d.index.astype(str)
+
+    vol_prev1d_map = df['stock_id'].map(vol_prev1d).fillna(0)
+    vol_prev3d_map = df['stock_id'].map(vol_prev3d).fillna(0)
+    vol_prev5d_map = df['stock_id'].map(vol_prev5d).fillna(0)
+    vol_3d_ago_map = df['stock_id'].map(vol.iloc[max(0, last_vol_idx - 3)]).fillna(0)
+    vol_5d_ago_map = df['stock_id'].map(vol.iloc[max(0, last_vol_idx - 5)]).fillna(0)
+
+    df['成交量(張)'] = (df['stock_id'].map(vol_1d).fillna(0) / 1000).round(0)
+    df['成交量3日(張)'] = (df['stock_id'].map(vol_3d).fillna(0) / 1000).round(0)
+    df['成交量5日(張)'] = (df['stock_id'].map(vol_5d).fillna(0) / 1000).round(0)
+
+    df['成交量單日增%'] = np.where(
+        vol_prev1d_map > 0,
+        ((df['stock_id'].map(vol_1d).fillna(0) / vol_prev1d_map) - 1) * 100,
+        0
+    ).round(2)
+    df['成交量3日累計增%'] = np.where(
+        vol_prev3d_map > 0,
+        ((df['stock_id'].map(vol_3d).fillna(0) / vol_prev3d_map) - 1) * 100,
+        0
+    ).round(2)
+    df['成交量5日累計增%'] = np.where(
+        vol_prev5d_map > 0,
+        ((df['stock_id'].map(vol_5d).fillna(0) / vol_prev5d_map) - 1) * 100,
+        0
+    ).round(2)
+    df['成交量較3日前增%'] = np.where(
+        vol_3d_ago_map > 0,
+        ((df['stock_id'].map(vol_1d).fillna(0) / vol_3d_ago_map) - 1) * 100,
+        0
+    ).round(2)
+    df['成交量較5日前增%'] = np.where(
+        vol_5d_ago_map > 0,
+        ((df['stock_id'].map(vol_1d).fillna(0) / vol_5d_ago_map) - 1) * 100,
+        0
+    ).round(2)
+
+    # 三大法人 (當天)
+    f = _finlab_data.get('institutional_investors_trading_summary:外陸資買賣超股數(不含外資自營商)').iloc[-1]
+    t = _finlab_data.get('institutional_investors_trading_summary:投信買賣超股數').iloc[-1]
+    d = _finlab_data.get('institutional_investors_trading_summary:自營商買賣超股數(自行買賣)').iloc[-1]
+    f.index = f.index.astype(str)
+    t.index = t.index.astype(str)
+    d.index = d.index.astype(str)
+
+    df['外資買賣超(張)'] = (df['stock_id'].map(f).fillna(0) / 1000).round(1)
+    df['投信買賣超(張)'] = (df['stock_id'].map(t).fillna(0) / 1000).round(1)
+    df['自營商買賣超(張)'] = (df['stock_id'].map(d).fillna(0) / 1000).round(1)
+    df['三大法人合計(張)'] = df['外資買賣超(張)'] + df['投信買賣超(張)'] + df['自營商買賣超(張)']
+    df['三大法人力道%'] = np.where(
+        df['成交量(張)'] > 0,
+        df['三大法人合計(張)'] / df['成交量(張)'] * 100,
+        0
+    ).round(2)
+
+    df.attrs['scan_date'] = last_date.strftime('%Y-%m-%d')
+    df.attrs['total_market_cap'] = mv_pure.sum() / 1e8  # 億
+    df.attrs['top_n'] = top_n
+    return df
+
+
+def _render_market_cap_ranking_tab():
+    """整體市值排名 UI (純台股結構視角)"""
+    st.caption(
+        "💡 **整體市值排名** = 純按市值排序全市場個股，不套用主力篩選。"
+        "看台股龍頭結構 + 當日整體狀態 (股價/漲跌/量增/三大法人力道)。"
+    )
+
+    # 控制面板
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        top_n = st.selectbox(
+            "顯示前 N 大",
+            options=[30, 50, 100, 200, 300],
+            index=2,  # 預設 100
+            key="mc_top_n",
+            help="用 etl:market_value 最新一日排序",
+        )
+    with col2:
+        market_filter = st.multiselect(
+            "市場別",
+            options=['sii', 'otc'],
+            default=['sii', 'otc'],
+            key="mc_market",
+            format_func=lambda x: {'sii': '上市 (sii)', 'otc': '上櫃 (otc)'}.get(x, x),
+        )
+    with col3:
+        st.write("")
+        st.caption("💡 切換上市/上櫃看不同結構")
+
+    if not market_filter:
+        st.warning("請至少選一個市場")
+        return
+
+    with st.spinner("抓市值前 N 大 + 三大法人 + 量增…"):
+        df = _scan_market_cap_ranking(
+            top_n=top_n,
+            market_filter=tuple(market_filter),
+        )
+
+    scan_date = df.attrs.get('scan_date', '?')
+    total_mv = df.attrs.get('total_market_cap', 0)
+
+    # ============ 摘要卡 ============
+    st.divider()
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("資料日期", scan_date)
+    m2.metric("全市場市值", f"{total_mv:,.0f} 億")
+    m3.metric(f"前 {top_n} 檔合計", f"{df['市值(億)'].sum():,.0f} 億",
+              delta=f"{df['市值(億)'].sum() / total_mv * 100:.1f}% 佔比")
+    m4.metric("上漲家數", f"{(df['漲跌幅%'] > 0).sum()} 檔")
+    m5.metric("下跌家數", f"{(df['漲跌幅%'] < 0).sum()} 檔")
+
+    # ============ 明細表 ============
+    st.divider()
+    st.markdown(f"#### 📊 整體市值前 {top_n} 大 (純按市值排序)")
+
+    display_df = df[['排名', 'stock_id', '名稱', '市場', '產業',
+                       '市值(億)', '收盤價', '漲跌幅%',
+                       '成交量(張)', '成交量單日增%', '成交量3日累計增%', '成交量5日累計增%',
+                       '成交量較3日前增%', '成交量較5日前增%',
+                       '外資買賣超(張)', '投信買賣超(張)', '自營商買賣超(張)',
+                       '三大法人合計(張)', '三大法人力道%']].copy()
+
+    # 格式化
+    for col in ['成交量(張)', '成交量3日(張)', '成交量5日(張)']:
+        if col in display_df.columns:
+            display_df[col] = display_df[col].apply(lambda x: f"{int(x):,}")
+    display_df['收盤價'] = display_df['收盤價'].apply(lambda x: f"{x:,.2f}")
+    for col in display_df.columns:
+        if '(張)' in col and col not in ['成交量(張)', '成交量3日(張)', '成交量5日(張)']:
+            display_df[col] = display_df[col].apply(lambda x: f"{x:+,.1f}")
+        elif '力道%' in col or '增%' in col or col == '漲跌幅%':
+            display_df[col] = display_df[col].apply(lambda x: f"{x:+.2f}%")
+    display_df['市值(億)'] = display_df['市值(億)'].apply(lambda x: f"{x:,.1f}")
+
+    st.dataframe(display_df, hide_index=True, width="stretch", height=600)
+
+    # ============ CSV 下載 ============
+    csv_bytes = df.to_csv(index=False).encode("utf-8-sig")
+    st.download_button(
+        label=f"⬇️ 下載整體市值前 {top_n} 大 (CSV)",
+        data=csv_bytes,
+        file_name=f"market_cap_top{top_n}_{scan_date.replace('-', '')}.csv",
+        mime="text/csv",
+        key="mc_download_csv",
+    )
+
+    # ============ 公式說明 ============
+    with st.expander("📐 整體市值排名公式說明"):
+        st.markdown("""
+### 排名規則
+- **純按 `etl:market_value` 最新一日市值降冪排序**
+- **不套用任何主力篩選** — 想看台股結構就用這個 tab
+- 想看「主力進場篩選」請切回 🔥 主力掃描 tab
+
+### 顯示欄位
+| 欄位 | 公式 |
+|---|---|
+| 市值(億) | `etl:market_value` ÷ 1e8 |
+| 收盤價 | `price:收盤價` 最新一日 |
+| 漲跌幅% | 今日 / 昨日 - 1 |
+| 成交量(張) | 今日成交量 ÷ 1000 |
+| 成交量單日增% | 今日 / 昨日 - 1 |
+| 成交量 3 日累計增% | 近 3 日累計 / 前 3 日累計 - 1 |
+| 成交量 5 日累計增% | 近 5 日累計 / 前 5 日累計 - 1 |
+| 成交量較 3 日前增% | 今日 / 3 日前單日 - 1 |
+| 成交量較 5 日前增% | 今日 / 5 日前單日 - 1 |
+| 外資/投信/自營商買賣超(張) | finlab 三大法人 ÷ 1000 |
+| 三大法人力道% | 三大法人合計 / 成交量 × 100 |
+
+### 使用情境
+- 看台股市值龍頭 (前 10 名一定是 2330 / 2317 / 2454 等大型權值股)
+- 觀察權值股當日狀態 (價格、漲跌、量、法人動作)
+- 對照主力掃描的「主力進場」訊號是否跟大盤同步
+""")
+
+
+def _render_scan_tab():
+    st.markdown("### 📊 全市場掃描")
+    st.caption(
+        "兩種視角：🔥 主力掃描 (有篩選條件) 或 📊 整體市值排名 (純台股結構)。"
+    )
+
+    subtab_scan, subtab_market_cap = st.tabs([
+        "🔥 主力掃描 (有篩選)",
+        "📊 整體市值排名 (全市場)",
+    ])
+
+    with subtab_scan:
+        _render_scan_subtab()
+
+    with subtab_market_cap:
+        _render_market_cap_ranking_tab()
+
+
+def _render_scan_subtab():
+    """原本的融資/三大法人主力掃描 (有篩選條件)"""
     # 掃描類型 radio — 切換「融資代理 / 三大法人」
     scan_type = st.radio(
         "📊 掃描類型",

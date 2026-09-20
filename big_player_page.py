@@ -699,6 +699,8 @@ def _scan_main_force(market_cap_top: int = 300,
             if vol_change_filter_types and min_vol_change_pct != 0 else '不限'
         ),
     }
+    # 加 市值排名 + 5 日平均成交金額 (顯示用)
+    df = _enrich_df_with_market_rank_and_amount(df)
     return df
 
 
@@ -960,6 +962,47 @@ def _scan_institutional(market_cap_top: int = 300,
             if vol_change_filter_types and min_vol_change_pct != 0 else '不限'
         ),
     }
+    # 加 市值排名 + 5 日平均成交金額 (顯示用)
+    df = _enrich_df_with_market_rank_and_amount(df)
+    return df
+
+
+# ============================================================
+# 主力 scan 共用 enrich: 加 市值排名 + 5 日平均成交金額
+# ============================================================
+def _enrich_df_with_market_rank_and_amount(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    給主力 scan 結果 df 加兩個欄位 (在排序前/後都可):
+
+    - 市值排名: 該股在全市場 (etl:market_value) 的市值排名 (1=最大)
+    - 平均成交金額(5日)(億): 5 日累計成交量(張) × 平均收盤價 / 5 / 1e8
+
+    假設 df 內已有 '成交量5日(張)' 欄位 (主力 scan 內都有)
+    """
+    mv = _finlab_data.get('etl:market_value')
+    mv_last = mv.iloc[-1]
+    last_date = mv.index[-1]
+    mv_last.index = mv_last.index.astype(str)
+
+    # 1) 市值排名 (全市場)
+    full_market_rank = mv_last.rank(method='min', ascending=False).astype('Int64')
+    df['市值排名'] = df['stock_id'].map(full_market_rank).fillna(9999).astype('Int64')
+
+    # 2) 5 日平均成交金額
+    close = _finlab_data.get('price:收盤價')
+    if last_date in close.index:
+        last_close_idx = close.index.get_loc(last_date)
+    else:
+        last_close_idx = len(close) - 1
+    avg_close_5d = close.iloc[max(0, last_close_idx - 4):last_close_idx + 1].mean(axis=0)
+    avg_close_5d.index = avg_close_5d.index.astype(str)
+    df['平均收盤價(5日)'] = df['stock_id'].map(avg_close_5d).fillna(0).round(2)
+    if '成交量5日(張)' in df.columns:
+        df['平均成交金額(5日)(億)'] = np.where(
+            df['平均收盤價(5日)'] > 0,
+            (df['成交量5日(張)'] * 1000 * df['平均收盤價(5日)'] / 5 / 1e8),
+            0
+        ).round(2)
     return df
 
 
@@ -1179,6 +1222,8 @@ def _render_market_cap_ranking_tab():
         elif '力道%' in col or '增%' in col or col == '漲跌幅%':
             display_df[col] = display_df[col].apply(lambda x: f"{x:+.2f}%")
     display_df['市值(億)'] = display_df['市值(億)'].apply(lambda x: f"{x:,.1f}")
+    if '市值排名' in display_df.columns:
+        display_df['市值排名'] = display_df['市值排名'].apply(lambda x: str(int(x)))
     if '平均成交金額(5日)(億)' in display_df.columns:
         display_df['平均成交金額(5日)(億)'] = display_df['平均成交金額(5日)(億)'].apply(lambda x: f"{x:.2f}")
 
@@ -1491,8 +1536,8 @@ def _render_margin_scan():
 
     # 明細表（含當天 / 3 日 / 5 日三視角 + 5 種成交量增幅）
     st.markdown("#### 📋 完整明細表（含當天 / 3 日 / 5 日三視角 + 5 種成交量增幅）")
-    display_df = df[['stock_id', '名稱', '市場', '產業', '市值(億)',
-                      '收盤價', '漲跌幅%',
+    display_df = df[['市值排名', 'stock_id', '名稱', '市場', '產業', '市值(億)',
+                      '平均成交金額(5日)(億)', '收盤價', '漲跌幅%',
                       '融資買進(張)', '融資賣出(張)', '融資淨買(張)',
                       '成交量(張)', '成交量單日增%', '成交量較3日前增%', '成交量較5日前增%',
                       '主力力道%',
@@ -1795,7 +1840,8 @@ def _render_institutional_scan():
     # ============ 明細表（含 4 個法人 × 3 時間視角） ============
     st.markdown("#### 📋 完整明細表（4 法人 × 3 時間視角）")
     display_cols = [
-        'stock_id', '名稱', '市場', '產業', '市值(億)', '收盤價', '漲跌幅%',
+        '市值排名', 'stock_id', '名稱', '市場', '產業', '市值(億)',
+        '平均成交金額(5日)(億)', '收盤價', '漲跌幅%',
         '外資買賣超(張)', '投信買賣超(張)', '自營商買賣超(張)', '三大法人合計(張)',
         '成交量(張)', '成交量單日增%', '成交量較3日前增%', '成交量較5日前增%',
         '外資力道%', '投信力道%', '自營商力道%', '三大法人力道%',
@@ -1811,6 +1857,10 @@ def _render_institutional_scan():
     for col in ['成交量(張)', '成交量3日(張)', '成交量5日(張)']:
         display_df[col] = display_df[col].apply(lambda x: f"{int(x):,}")
     display_df['收盤價'] = display_df['收盤價'].apply(lambda x: f"{x:,.2f}")
+    if '市值排名' in display_df.columns:
+        display_df['市值排名'] = display_df['市值排名'].apply(lambda x: str(int(x)))
+    if '平均成交金額(5日)(億)' in display_df.columns:
+        display_df['平均成交金額(5日)(億)'] = display_df['平均成交金額(5日)(億)'].apply(lambda x: f"{x:.2f}")
     for col in display_cols:
         if '(張)' in col and col not in ['成交量(張)', '成交量3日(張)', '成交量5日(張)']:
             display_df[col] = display_df[col].apply(lambda x: f"{x:+,.1f}")

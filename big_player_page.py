@@ -1143,6 +1143,20 @@ def _scan_market_cap_ranking(top_n: int = 100,
         0
     ).round(2)
 
+    # === 當日成交金額 (億) + 當日 vs 5 日量增 % ===
+    # 當日 (張) × 1000 (股) × 當日收盤價 / 1e8 = 億
+    df['當日成交金額(億)'] = np.where(
+        df['收盤價'] > 0,
+        (df['成交量(張)'] * 1000 * df['收盤價'] / 1e8),
+        0
+    ).round(2)
+    # 量增 %: (當日 / 5 日均 - 1) × 100
+    df['當日vs5日量增%'] = np.where(
+        df['平均成交金額(5日)(億)'] > 0,
+        ((df['當日成交金額(億)'] / df['平均成交金額(5日)(億)']) - 1) * 100,
+        0
+    ).round(2)
+
     # 三大法人 (當天)
     f = _finlab_data.get('institutional_investors_trading_summary:外陸資買賣超股數(不含外資自營商)').iloc[-1]
     t = _finlab_data.get('institutional_investors_trading_summary:投信買賣超股數').iloc[-1]

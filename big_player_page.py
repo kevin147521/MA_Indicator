@@ -1816,7 +1816,6 @@ def _render_institutional_scan():
             display_df[col] = display_df[col].apply(lambda x: f"{x:+,.1f}")
         elif '力道%' in col or '增%' in col or col == '漲跌幅%':
             display_df[col] = display_df[col].apply(lambda x: f"{x:+.2f}%")
-    display_df['漲跌幅%'] = display_df['漲跌幅%'].apply(lambda x: f"{x:+.2f}%")
     st.dataframe(display_df, hide_index=True, width="stretch", height=600)
 
     # ============ CSV 下載 ============

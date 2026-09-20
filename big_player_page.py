@@ -1064,6 +1064,23 @@ def _scan_market_cap_ranking(top_n: int = 100,
         0
     ).round(2)
 
+    # === 過去 5 日平均成交金額 ===
+    # 平均金額 ≈ 5 日累計 (張) × 5 日平均收盤價 / 5 / 1e8 (億)
+    close = _finlab_data.get('price:收盤價')
+    if last_date in close.index:
+        last_close_idx = close.index.get_loc(last_date)
+    else:
+        last_close_idx = len(close) - 1
+    avg_close_5d = close.iloc[max(0, last_close_idx - 4):last_close_idx + 1].mean(axis=0)
+    avg_close_5d.index = avg_close_5d.index.astype(str)
+    df['平均收盤價(5日)'] = df['stock_id'].map(avg_close_5d).fillna(0).round(2)
+    # 5 日累計 (張) × 1000 (股) × 5 日平均收盤價 / 5 / 1e8 = 億
+    df['平均成交金額(5日)(億)'] = np.where(
+        df['平均收盤價(5日)'] > 0,
+        (df['成交量5日(張)'] * 1000 * df['平均收盤價(5日)'] / 5 / 1e8),
+        0
+    ).round(2)
+
     # 三大法人 (當天)
     f = _finlab_data.get('institutional_investors_trading_summary:外陸資買賣超股數(不含外資自營商)').iloc[-1]
     t = _finlab_data.get('institutional_investors_trading_summary:投信買賣超股數').iloc[-1]
@@ -1145,7 +1162,7 @@ def _render_market_cap_ranking_tab():
     st.markdown(f"#### 📊 整體市值前 {top_n} 大 (純按市值排序)")
 
     display_df = df[['排名', 'stock_id', '名稱', '市場', '產業',
-                       '市值(億)', '收盤價', '漲跌幅%',
+                       '市值(億)', '平均成交金額(5日)(億)', '收盤價', '漲跌幅%',
                        '成交量(張)', '成交量單日增%', '成交量3日累計增%', '成交量5日累計增%',
                        '成交量較3日前增%', '成交量較5日前增%',
                        '外資買賣超(張)', '投信買賣超(張)', '自營商買賣超(張)',
@@ -1162,6 +1179,8 @@ def _render_market_cap_ranking_tab():
         elif '力道%' in col or '增%' in col or col == '漲跌幅%':
             display_df[col] = display_df[col].apply(lambda x: f"{x:+.2f}%")
     display_df['市值(億)'] = display_df['市值(億)'].apply(lambda x: f"{x:,.1f}")
+    if '平均成交金額(5日)(億)' in display_df.columns:
+        display_df['平均成交金額(5日)(億)'] = display_df['平均成交金額(5日)(億)'].apply(lambda x: f"{x:.2f}")
 
     st.dataframe(display_df, hide_index=True, width="stretch", height=600)
 

@@ -1829,19 +1829,23 @@ def _render_institutional_scan():
     fig_bar = go.Figure()
     colors = ['#26a69a' if v >= 10 else '#42a5f5' if v >= 5 else '#ffa726'
               for v in top30[rank_col]]
-    # 自訂 hover
-    if inst_rank_type == '合計 (三大法人)':
-        net_col = f'三大法人合計(張)' if time_window == '當天' else f'三大法人合計{time_window[0]}日累計(張)'
-        name_h = f"{inst_rank_type} 力道%"
-    else:
-        # 外資/投信/自營
-        if inst_rank_type == '外資':
-            net_col = f'外{inst_rank_type}買賣超(張)' if time_window == '當天' else f'外{inst_rank_type}{time_window[0]}日累計(張)'
-        elif inst_rank_type == '投信':
-            net_col = f'投信買賣超(張)' if time_window == '當天' else f'投信{time_window[0]}日累計(張)'
-        else:
-            net_col = f'自營商買賣超(張)' if time_window == '當天' else f'自營商{time_window[0]}日累計(張)'
-        name_h = f"{inst_rank_type} 力道%"
+    # 自訂 hover (淨買欄位對應表)
+    NET_COL_MAP = {
+        ('合計 (三大法人)', '當天'): '三大法人合計(張)',
+        ('合計 (三大法人)', '3 日累計'): '三大法人合計3日(張)',
+        ('合計 (三大法人)', '5 日累計'): '三大法人合計5日(張)',
+        ('外資', '當天'): '外資買賣超(張)',
+        ('外資', '3 日累計'): '外資3日累計(張)',
+        ('外資', '5 日累計'): '外資5日累計(張)',
+        ('投信', '當天'): '投信買賣超(張)',
+        ('投信', '3 日累計'): '投信3日累計(張)',
+        ('投信', '5 日累計'): '投信5日累計(張)',
+        ('自營商', '當天'): '自營商買賣超(張)',
+        ('自營商', '3 日累計'): '自營商3日累計(張)',
+        ('自營商', '5 日累計'): '自營商5日累計(張)',
+    }
+    net_col = NET_COL_MAP[(inst_rank_type, time_window)]
+    name_h = f"{inst_rank_type} 力道%"
 
     fig_bar.add_trace(go.Bar(
         y=bar_labels,

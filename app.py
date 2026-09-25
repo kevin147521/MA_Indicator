@@ -600,6 +600,7 @@ if page == "💹 主力訊號":
 # ============================================================
 # 資料更新頁面
 # ============================================================
+def render_data_update_page():
     from data_update import (
         run_update, get_last_update_summary, load_status,
         DATA_SOURCES, STATUS_PATH,

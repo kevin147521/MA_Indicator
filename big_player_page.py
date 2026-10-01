@@ -1,32 +1,33 @@
 #!/opt/anaconda3/envs/finlab3/bin/python
 # coding: utf-8
 """
-big_player_page.py — V1 第 9 個 page「💹 主力訊號（融資買賣代理）」
+big_player_page.py — V1 第 9 個 page「💹 主力訊號」
 
-⚠️ 重要說明 (2026-09-19 重寫)
-==============================
+⚠️ 重要說明 (2026-09-19 重寫, 2026-10-02 加三大法人)
+======================================================
 原始「主力 / 大戶買賣力」定義 = **當天逐筆內外盤方向**
 (外盤量 - 內盤量) 或「特大單+大單 買進 - 賣出」。
 
-**finlab 公開資料限制**（實測確認）：
-- ❌ `price:內外盤` / `price:外盤量` / `price:內盤量`  → not found
-- ❌ `institutional_investors:三大法人買賣超` / 外資 / 投信 / 自營商 → not found
-- ❌ `institutional_investors:借券` → not found
+**finlab 公開資料限制**（實測確認 2026-10-02）：
+- ❌ `price:內外盤` / `price:外盤量` / `price:內盤量` → not found
+- ✅ **三大法人** (修正後): `institutional_investors_trading_summary:*`
+  (舊 prefix `institutional_investors:*` 才會 not found)
+  - 外陸資買賣超股數(不含外資自營商) / 投信買賣超股數 / 自營商買賣超股數(自行買賣)
+  - 資料從 2012-05-02 起，3,521 個交易日，2,699 檔個股
+- ✅ 融資買賣: `margin_transactions:融資買進/賣出/融券買進/賣出`
+- ❌ `margin_transactions:融資餘額/融券餘額` → not found
 
-**唯一可用的「日頻買賣方向」資料：**
-- ✅ `margin_transactions:融資買進` / `融資賣出` / `融券買進` / `融券賣出`
+**「主力訊號」用兩種資料來源**：
+1. **融資買賣** (代理) = 反映「槓桿交易者」方向
+2. **三大法人** (真實) = 外資/投信/自營商 真實買賣超 (2026-10-02 新增)
 
-融資 = 投資人借錢買股票（加槓桿看多），所以融資淨買的方向
-被當作「主力 / 槓桿買方」的方向代理指標。
-
-⚠️ 此為**代理指標**，跟券商逐筆大單資料會有差異，僅供研究參考。
-   集保 (inventory) 是「誰持有」週頻資料，不是「當天買賣」日頻方向，
-   早期版本誤用集保當大戶買賣力代理是錯誤的，本版已修正。
+⚠️ 融資淨買方向仍為**代理指標**（反映槓桿買方），
+   跟券商逐筆大單資料會有差異。三大法人則是**真實資料**。
 
 兩大功能：
-1. **🎯 個股主力訊號**：選個股，看融資買賣日頻指標 + 5 日累計代理
-2. **📊 全市場主力力道掃描**：市值前 300 大 + 融資淨增加 + 股價上漲
-   → 排名「主力力道% = 融資淨買(股) / 成交量(股)」Top 30
+1. **🎯 個股主力訊號**：選個股，看融資買賣日頻指標 + 三大法人當日/3日/5日累計
+2. **📊 全市場主力力道掃描**：3 種 sub-tab
+   - 🔥 主力掃描 (融資代理) / 🏛️ 三大法人 / 📊 整體市值排名
 """
 from __future__ import annotations
 
@@ -60,6 +61,46 @@ def _cached_daily(stock_id: str) -> str:
 
 def _get_daily(stock_id: str) -> pd.DataFrame:
     raw = _cached_daily(stock_id)
+    df = pd.read_json(raw, orient='split')
+    if df.empty:
+        return df
+    df['date'] = pd.to_datetime(df['date'])
+    return df
+
+
+# ============================================================
+# 三大法人 (個股) — 抓最近 30 天三大法人買賣超
+# ============================================================
+@st.cache_data(ttl=3600, show_spinner="抓個股三大法人買賣超…")
+def _cached_institutional_daily(stock_id: str) -> str:
+    """抓個股最近 30 天三大法人買賣超 (股)"""
+    outer = _finlab_data.get('institutional_investors_trading_summary:外陸資買賣超股數(不含外資自營商)')
+    trust = _finlab_data.get('institutional_investors_trading_summary:投信買賣超股數')
+    dealer = _finlab_data.get('institutional_investors_trading_summary:自營商買賣超股數(自行買賣)')
+
+    # 確認 stock_id 在三個 dataset 內都有
+    if stock_id not in outer.columns or stock_id not in trust.columns or stock_id not in dealer.columns:
+        return pd.DataFrame().to_json(orient='split', date_format='iso')
+
+    # 取最近 30 天
+    last_dates = outer.index[-30:]
+    df = pd.DataFrame({
+        'date': last_dates,
+        '外陸資(股)': outer.loc[last_dates, stock_id].fillna(0).values,
+        '投信(股)': trust.loc[last_dates, stock_id].fillna(0).values,
+        '自營商(股)': dealer.loc[last_dates, stock_id].fillna(0).values,
+    })
+    # 換算成張 (1 張 = 1000 股)
+    df['外陸資(張)'] = df['外陸資(股)'] / 1000
+    df['投信(張)'] = df['投信(股)'] / 1000
+    df['自營商(張)'] = df['自營商(股)'] / 1000
+    df['三大法人合計(張)'] = df['外陸資(張)'] + df['投信(張)'] + df['自營商(張)']
+
+    return df.to_json(orient='split', date_format='iso')
+
+
+def _get_institutional_daily(stock_id: str) -> pd.DataFrame:
+    raw = _cached_institutional_daily(stock_id)
     df = pd.read_json(raw, orient='split')
     if df.empty:
         return df
@@ -318,6 +359,65 @@ def _render_individual_tab():
         delta_color="inverse" if last['融券淨增(張)'] > 0 else "normal",
         help="融券賣出 - 融券買進 (正=放空加碼，負=空單回補)",
     )
+
+    # ============ 三大法人 (新) ============
+    st.divider()
+    st.markdown("#### 🏛️ 三大法人買賣超（當日 / 3 日累計 / 5 日累計）")
+    try:
+        inst_df = _get_institutional_daily(stock_id)
+    except Exception as e:
+        st.warning(f"⚠️ 無法取得 {stock_id} 三大法人資料：`{e}`")
+        inst_df = None
+
+    if inst_df is not None and not inst_df.empty and len(inst_df) >= 5:
+        # 成交量 (用融資 view 最後一天)
+        vol_today_lots = last['成交量(股)'] / 1000  # 換成張
+        last1 = inst_df.iloc[-1]
+        last3 = inst_df.tail(3).sum(numeric_only=True)
+        last5 = inst_df.tail(5).sum(numeric_only=True)
+
+        # 4 個 row: 外陸資 / 投信 / 自營商 / 三大法人合計
+        # 每 row 4 個 metric: 當日 / 3日累計 / 5日累計 / 當日力道%
+        for investor, emoji, label in [
+            ('外陸資', '🌍', '外陸資'),
+            ('投信', '🏛️', '投信'),
+            ('自營商', '💼', '自營商'),
+            ('三大法人合計', '🏆', '三大法人合計'),
+        ]:
+            st.markdown(f"**{emoji} {label}**")
+            cols = st.columns(4)
+            col_today = f'{label}(張)' if investor == '三大法人合計' else f'{label}(張)'
+            # 注意: 合計欄在 df 內是「三大法人合計(張)」
+            col_name_map = {
+                '外陸資': '外陸資(張)',
+                '投信': '投信(張)',
+                '自營商': '自營商(張)',
+                '三大法人合計': '三大法人合計(張)',
+            }
+            col_name = col_name_map[investor]
+
+            v1 = float(last1[col_name])
+            v3 = float(last3[col_name])
+            v5 = float(last5[col_name])
+
+            cols[0].metric("當日", f"{v1:+,.0f} 張",
+                           delta=("買超" if v1 > 0 else "賣超" if v1 < 0 else "持平"),
+                           delta_color="normal" if v1 > 0 else "inverse" if v1 < 0 else "off",
+                           help=f"{label} 當日買賣超 (張)")
+            cols[1].metric("3 日累計", f"{v3:+,.0f} 張",
+                           delta=f"{v3-v1:+,.0f} (含當日)",
+                           delta_color="normal" if v3 > 0 else "inverse" if v3 < 0 else "off",
+                           help=f"{label} 過去 3 個交易日累計 (張)")
+            cols[2].metric("5 日累計", f"{v5:+,.0f} 張",
+                           delta=f"{v5-v3:+,.0f} (前 2 日)",
+                           delta_color="normal" if v5 > 0 else "inverse" if v5 < 0 else "off",
+                           help=f"{label} 過去 5 個交易日累計 (張)")
+            # 當日力道%: 法人淨買(張) / 成交量(張) × 100
+            force_pct = (v1 / vol_today_lots * 100) if vol_today_lots > 0 else 0
+            cols[3].metric("當日力道 %", f"{force_pct:+.2f}%",
+                           help=f"{label} 當日淨買 / 當日成交量 × 100")
+    else:
+        st.caption("⚠️ 三大法人資料不足（< 5 天），跳過此區塊。")
 
     # 訊號 + 強弱
     st.divider()

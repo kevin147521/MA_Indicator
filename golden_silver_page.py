@@ -65,10 +65,23 @@ def _cached_kline_data():
     except Exception:
         pass
 
+    # 三大法人 (key prefix 修正為 institutional_investors_trading_summary:)
+    inst_outer = _finlab_data.get('institutional_investors_trading_summary:外陸資買賣超股數(不含外資自營商)')
+    inst_trust = _finlab_data.get('institutional_investors_trading_summary:投信買賣超股數')
+    inst_dealer = _finlab_data.get('institutional_investors_trading_summary:自營商買賣超股數(自行買賣)')
+    # 對齊 stock_id dtype
+    for d in [inst_outer, inst_trust, inst_dealer]:
+        d.columns = d.columns.astype(str)
+
     return {
         'close': close, 'open': open_, 'high': high, 'low': low, 'vol': vol,
         'mv_map': mv_map, 'name_map': name_map, 'market_map': market_map,
         'industry_map': industry_map, 'pure_stocks': pure,
+        'institutional_data': {
+            'foreign': inst_outer,
+            'trust': inst_trust,
+            'dealer': inst_dealer,
+        },
     }
 
 
@@ -102,6 +115,7 @@ def _cached_scan(
         market_map=data['market_map'],
         name_map=data['name_map'],
         industry_map=data['industry_map'],
+        institutional_data=data['institutional_data'],
         tolerance_pct=tolerance_pct,
         vol_shrink_ratio=vol_shrink_ratio,
         break_threshold=break_threshold,
@@ -251,6 +265,9 @@ def render_golden_silver_page():
         '夾擊帶寬度%', '60MA距離%', '上蓋距離%',
         '5日均量(張)', '60日均量(張)', '量縮比',
         '突破120MA', '突破240MA', '近5日內突破', '實體長紅',
+        '外陸資當日', '外陸資3日', '外陸資5日',
+        '投信當日', '投信3日', '投信5日',
+        '自營商當日', '自營商3日', '自營商5日',
         '訊號', '訊號分數',
     ]].copy()
     # 格式化
@@ -264,6 +281,11 @@ def render_golden_silver_page():
         display_df[col] = display_df[col].apply(lambda x: f"{x:,.0f}")
     for col in ['突破120MA', '突破240MA', '近5日內突破', '實體長紅']:
         display_df[col] = display_df[col].apply(lambda x: '✅' if x else '—')
+    # 三大法人 9 欄 (張, 帶正負號 + 顏色標記)
+    for col in ['外陸資當日', '外陸資3日', '外陸資5日',
+                '投信當日', '投信3日', '投信5日',
+                '自營商當日', '自營商3日', '自營商5日']:
+        display_df[col] = display_df[col].apply(lambda x: f"{x:+,.0f}")
     display_df['市值(億)'] = display_df['市值(億)'].apply(lambda x: f"{x:,.0f}")
     st.dataframe(display_df, hide_index=True, width="stretch", height=600)
 

@@ -204,6 +204,7 @@ def scan_golden_silver(
     market_map: dict,
     name_map: dict,
     industry_map: dict,
+    institutional_data: dict = None,
     tolerance_pct: float = DEFAULT_TOLERANCE_PCT,
     vol_shrink_ratio: float = DEFAULT_VOL_SHRINK_RATIO,
     break_threshold: float = DEFAULT_BREAK_THRESHOLD,
@@ -216,6 +217,9 @@ def scan_golden_silver(
         stock_ids: 要掃的個股清單 (純股票)
         close_df/open_df/high_df/low_df/vol_df: finlab 抓的 5 個 K 線/量資料 (columns=stock_id, index=date)
         market_cap_map / market_map / name_map / industry_map: 對應的 metadata
+        institutional_data: 三大法人資料 dict {'foreign': DataFrame, 'trust': DataFrame, 'dealer': DataFrame}
+            每個 DataFrame 是 finlab 抓的 (股), columns=stock_id, index=date
+            None 表示跳過三大法人欄位
         tolerance_pct: 夾擊容差 (%)
         vol_shrink_ratio: 量縮門檻 (5日/60日 量比 < 此值)
         break_threshold: 突破門檻 (收盤 / 上蓋 MA > 此值算突破)
@@ -227,7 +231,8 @@ def scan_golden_silver(
         - 收盤, 60MA, 120MA, 240MA, upper_ma
         - 夾擊帶寬度%, 60MA距離%, 上蓋距離%
         - 5日均量, 60日均量, 量縮比
-        - 突破120, 突破240, 實體長紅
+        - 突破120MA, 突破240MA, 近5日內突破, 實體長紅
+        - **外陸資當日/3日/5日, 投信當日/3日/5日, 自營商當日/3日/5日 (張)**
         - 訊號, 訊號分數 (0-4)
     """
     # 算 MA
@@ -301,7 +306,45 @@ def scan_golden_silver(
         if not is_compressed:
             continue
 
-        rows.append({
+        # ============ 三大法人 (當日/3日/5日 累計, 換算成張) ============
+        inst_cols = {
+            '外陸資當日': 0.0, '外陸資3日': 0.0, '外陸資5日': 0.0,
+            '投信當日': 0.0, '投信3日': 0.0, '投信5日': 0.0,
+            '自營商當日': 0.0, '自營商3日': 0.0, '自營商5日': 0.0,
+        }
+        if institutional_data:
+            for investor_key, col_prefix in [
+                ('foreign', '外陸資'),
+                ('trust', '投信'),
+                ('dealer', '自營商'),
+            ]:
+                df_inst = institutional_data.get(investor_key)
+                if df_inst is None or sid not in df_inst.columns:
+                    continue
+                inst_s = df_inst[sid].dropna()
+                if len(inst_s) == 0:
+                    continue
+                # 抓最近 5 天的 index (用 close 的 index 對齊)
+                # 用 close 的最後 5 個 date 找對應 institutional 的值
+                last5_dates = close_s.index[-5:]
+                # 從 institutional 取對應日期的值
+                aligned = []
+                for d in last5_dates:
+                    if d in inst_s.index:
+                        aligned.append(float(inst_s.loc[d]))
+                    else:
+                        # 找不到對應日期, 用最後一個
+                        aligned.append(float(inst_s.iloc[-1]) if len(inst_s) > 0 else 0)
+                # 1=當日, 3=前 3 日累計, 5=前 5 日累計
+                # 注意: 已經是 (股) 累計, /1000 換成張
+                # 當日 = 第 1 天
+                # 3 日 = sum(最後 3 天)
+                # 5 日 = sum(最後 5 天)
+                inst_cols[f'{col_prefix}當日'] = aligned[-1] / 1000
+                inst_cols[f'{col_prefix}3日'] = sum(aligned[-3:]) / 1000
+                inst_cols[f'{col_prefix}5日'] = sum(aligned[-5:]) / 1000
+
+        row = {
             'stock_id': sid,
             '名稱': name_map.get(sid, '?'),
             '市場': market_map.get(sid, '?'),
@@ -311,7 +354,7 @@ def scan_golden_silver(
             '60MA': round(ma60_last, 2),
             '120MA': round(ma120_last, 2),
             '240MA': round(ma240_last, 2),
-            'upper_ma': round(min(ma120_last, ma240_last), 2),
+            'upper_ma': round(max(ma120_last, ma240_last), 2),
             '夾擊帶寬度%': round(last_comp['band_width_pct'], 2),
             '60MA距離%': round(last_comp['dist_to_ma60_pct'], 2),
             '上蓋距離%': round(last_comp['dist_to_upper_pct'], 2),
@@ -324,7 +367,9 @@ def scan_golden_silver(
             '實體長紅': is_long_red,
             '訊號': label,
             '訊號分數': score,
-        })
+        }
+        row.update(inst_cols)
+        rows.append(row)
 
     return pd.DataFrame(rows)
 

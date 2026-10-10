@@ -101,7 +101,7 @@ with st.sidebar:
     st.header("📑 頁面")
     page = st.radio(
         "選擇功能",
-        ["📈 均線預測", "🗺️ 市值漲跌地圖", "📊 主動 ETF 持股", "📊 被動 ETF 追蹤", "🔍 均線收復", "🧪 跌破站回回測", "💰 融資維持率", "🧬 基因策略組合", "💹 主力訊號", "📐 金包銀掃描", "🔄 資料更新"],
+        ["📈 均線預測", "🗺️ 市值漲跌地圖", "📊 主動 ETF 持股", "📊 被動 ETF 追蹤", "🔍 均線收復", "🧪 跌破站回回測", "💰 融資維持率", "🧬 基因策略組合", "💹 主力訊號", "📐 金包銀掃描", "⏰ 60分K金包銀", "🔄 資料更新"],
         label_visibility="collapsed",
         key="page_selector",
     )
@@ -603,6 +603,15 @@ if page == "💹 主力訊號":
 if page == "📐 金包銀掃描":
     from golden_silver_page import render_golden_silver_page
     render_golden_silver_page()
+    st.stop()
+
+
+# ============================================================
+# 60分K 金包銀形態掃描 (第 11 個 page, 跟日K 版分開)
+# ============================================================
+if page == "⏰ 60分K金包銀":
+    from golden_silver_60min_page import render_golden_silver_60min_page
+    render_golden_silver_60min_page()
     st.stop()
 
 

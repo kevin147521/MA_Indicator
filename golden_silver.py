@@ -380,3 +380,183 @@ if __name__ == '__main__':
     print(f"DEFAULT_TOLERANCE_PCT = {DEFAULT_TOLERANCE_PCT}")
     print(f"DEFAULT_VOL_SHRINK_RATIO = {DEFAULT_VOL_SHRINK_RATIO}")
     print(f"DEFAULT_BREAK_THRESHOLD = {DEFAULT_BREAK_THRESHOLD}")
+
+
+# ============================================================
+# 60分K 版 scan (用 finlab tw_minute + resample)
+# ============================================================
+def scan_golden_silver_60min(
+    stock_ids: list[str],
+    market_cap_map: dict,
+    name_map: dict,
+    market_map: dict,
+    industry_map: dict,
+    institutional_data: dict = None,
+    ma_fast: int = 60,   # 60根 ≈ 2.5 日
+    ma_mid: int = 60,   # 60根 ≈ 2.5 日 (預設抓 30 天約 120 根 60分K, 夠算 60 根 MA)
+    ma_slow: int = 60,  # 60根 ≈ 2.5 日
+    vol_fast: int = 24,  # ≈ 1 日
+    vol_slow: int = 60, # ≈ 2.5 日
+    days_back: int = 30, # 抓最近幾天的 1 分 K (30 天 ≈ 120 根 60分K)
+    tolerance_pct: float = 1.0,    # 比日K 嚴格 (1% vs 3%)
+    vol_shrink_ratio: float = DEFAULT_VOL_SHRINK_RATIO,
+    break_threshold: float = 1.005, # 比日K 敏感 (0.5% vs 1%)
+    long_red_body_ratio: float = 0.6,
+) -> pd.DataFrame:
+    """
+    60分K 版「金包銀」型態掃描
+
+    用 finlab tw_minute:{stock_id} 抓每檔 1 分 K 然後 resample 成 60分K。
+    MA 期間用「根數」: 60/120/240 根 = 2.5/5/10 日。
+
+    Args:
+        stock_ids: 要掃的個股清單
+        ma_fast/ma_mid/ma_slow: 3 條 MA 根數
+        vol_fast/vol_slow: 量縮比較根數
+        days_back: 抓最近幾天 (預設 60, 60分K 約 240 根, 足夠算 240 根 MA)
+        tolerance_pct: 夾擊容差 (%)
+        break_threshold: 突破門檻
+
+    Returns:
+        DataFrame 每檔一列
+    """
+    from kbar_fetcher import fetch_60min_kbar
+    from finlab import data as _finlab_data
+    from datetime import datetime, timedelta
+
+    end_date = datetime.now().strftime('%Y-%m-%d')
+    # 抓 days_back 天 + 一些 buffer 確保有 240 根 60分K
+    start_date = (datetime.now() - timedelta(days=days_back + 30)).strftime('%Y-%m-%d')
+
+    rows = []
+    for sid in stock_ids:
+        try:
+            k60 = fetch_60min_kbar(sid, start_date, end_date)
+        except Exception:
+            continue
+        if k60 is None or k60.empty or len(k60) < ma_slow:
+            continue
+
+        close_s = k60['close']
+        open_s = k60['open']
+        high_s = k60['high']
+        low_s = k60['low']
+        vol_s = k60['volume']
+
+        # min_periods 放寬到 ma//2, 容忍早期 NaN (60 根 MA 只需 30 根有效值)
+        ma_fast_s = close_s.rolling(ma_fast, min_periods=max(1, ma_fast // 2)).mean()
+        ma_mid_s = close_s.rolling(ma_mid, min_periods=max(1, ma_mid // 2)).mean()
+        ma_slow_s = close_s.rolling(ma_slow, min_periods=max(1, ma_slow // 2)).mean()
+        vol_fast_s = vol_s.rolling(vol_fast, min_periods=vol_fast).mean()
+        vol_slow_s = vol_s.rolling(vol_slow, min_periods=vol_slow).mean()
+
+        if pd.isna(ma_fast_s.iloc[-1]) or pd.isna(ma_mid_s.iloc[-1]) or pd.isna(ma_slow_s.iloc[-1]):
+            continue
+
+        last_idx = k60.index[-1]
+        last_close = float(close_s.iloc[-1])
+        ma_fast_last = float(ma_fast_s.iloc[-1])
+        ma_mid_last = float(ma_mid_s.iloc[-1])
+        ma_slow_last = float(ma_slow_s.iloc[-1])
+        vol_fast_last = float(vol_fast_s.iloc[-1]) if not pd.isna(vol_fast_s.iloc[-1]) else 0
+        vol_slow_last = float(vol_slow_s.iloc[-1]) if not pd.isna(vol_slow_s.iloc[-1]) else 0
+        vol_ratio = vol_fast_last / vol_slow_last if vol_slow_last > 0 else 1.0
+
+        # 夾擊
+        comp_df = detect_compression(
+            close_s, ma_fast_s, ma_mid_s, ma_slow_s,
+            tolerance_pct=tolerance_pct,
+        )
+        last_comp = comp_df.iloc[-1]
+        is_compressed = bool(last_comp['is_compressed'])
+
+        # 量縮
+        is_vol_shrink = vol_ratio < vol_shrink_ratio
+
+        # 突破
+        bo_df = detect_breakout(close_s, ma_mid_s, ma_slow_s, threshold=break_threshold)
+        last_bo = bo_df.iloc[-1]
+        is_break_mid = bool(last_bo['break_120'])
+        is_break_slow = bool(last_bo['break_240'])
+        is_breakout = is_break_mid or is_break_slow
+        recent_break_5d = bool(last_bo['recent_break_5d'])
+        recent_break_20d = bool(last_bo['recent_break_20d'])
+
+        # 實體長紅 K 線
+        is_long_red = is_long_kbar(
+            float(open_s.iloc[-1]), last_close,
+            float(low_s.iloc[-1]), float(high_s.iloc[-1]),
+            body_ratio=long_red_body_ratio,
+        )
+
+        # 訊號
+        label, score = classify_signal(
+            is_compressed, is_vol_shrink, is_breakout, is_long_red,
+            recent_break_5d=recent_break_5d, recent_break_20d=recent_break_20d,
+        )
+
+        if not is_compressed:
+            continue
+
+        # ============ 三大法人 (對齊 60分K 最後一天的日頻) ============
+        inst_cols = {
+            '外陸資當日': 0.0, '外陸資3日': 0.0, '外陸資5日': 0.0,
+            '投信當日': 0.0, '投信3日': 0.0, '投信5日': 0.0,
+            '自營商當日': 0.0, '自營商3日': 0.0, '自營商5日': 0.0,
+        }
+        if institutional_data:
+            last_trade_date = pd.Timestamp(last_idx).date()
+            for investor_key, col_prefix in [
+                ('foreign', '外陸資'),
+                ('trust', '投信'),
+                ('dealer', '自營商'),
+            ]:
+                df_inst = institutional_data.get(investor_key)
+                if df_inst is None or sid not in df_inst.columns:
+                    continue
+                inst_s = df_inst[sid].dropna()
+                if len(inst_s) == 0:
+                    continue
+                # 找 last_trade_date 對應的 institutional index
+                # 用最近 <= last_trade_date 的 5 天
+                aligned = inst_s[inst_s.index <= pd.Timestamp(last_trade_date)].tail(5)
+                if len(aligned) == 0:
+                    aligned = inst_s.tail(5)
+                aligned = list(aligned.values)
+                # 對齊長度到 5
+                while len(aligned) < 5:
+                    aligned.insert(0, 0)
+                inst_cols[f'{col_prefix}當日'] = aligned[-1] / 1000
+                inst_cols[f'{col_prefix}3日'] = sum(aligned[-3:]) / 1000
+                inst_cols[f'{col_prefix}5日'] = sum(aligned[-5:]) / 1000
+
+        row = {
+            'stock_id': sid,
+            '名稱': name_map.get(sid, '?'),
+            '市場': market_map.get(sid, '?'),
+            '產業': industry_map.get(sid, '?'),
+            '市值(億)': round(market_cap_map.get(sid, 0) / 1e8, 1) if market_cap_map.get(sid, 0) > 0 else 0,
+            '資料時間': last_idx,
+            '收盤': last_close,
+            f'MA{ma_fast}': round(ma_fast_last, 2),
+            f'MA{ma_mid}': round(ma_mid_last, 2),
+            f'MA{ma_slow}': round(ma_slow_last, 2),
+            'upper_ma': round(max(ma_mid_last, ma_slow_last), 2),
+            '夾擊帶寬度%': round(last_comp['band_width_pct'], 2),
+            f'MA{ma_fast}距離%': round(last_comp['dist_to_ma60_pct'], 2),
+            '上蓋距離%': round(last_comp['dist_to_upper_pct'], 2),
+            f'量MA{vol_fast}(根)': round(vol_fast_last, 0),
+            f'量MA{vol_slow}(根)': round(vol_slow_last, 0),
+            '量縮比': round(vol_ratio, 3),
+            f'突破MA{ma_mid}': is_break_mid,
+            f'突破MA{ma_slow}': is_break_slow,
+            '近5日內突破': recent_break_5d,
+            '實體長紅': is_long_red,
+            '訊號': label,
+            '訊號分數': score,
+        }
+        row.update(inst_cols)
+        rows.append(row)
+
+    return pd.DataFrame(rows)
+

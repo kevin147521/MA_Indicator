@@ -85,6 +85,79 @@ def _cached_kline_data():
     }
 
 
+@st.cache_data(ttl=1800, show_spinner="掃 60分K 金包銀型態（每檔抓 30 天 1 分 K, 首次較慢）…")
+def _cached_scan_60min(
+    market_cap_top: int,
+    market_filter: tuple,
+    ma_fast: int,
+    ma_mid: int,
+    ma_slow: int,
+    vol_fast: int,
+    vol_slow: int,
+    days_back: int,
+    tolerance_pct: float,
+    vol_shrink_ratio: float,
+    break_threshold: float,
+    min_score: int = 1,
+) -> pd.DataFrame:
+    """60分K 金包銀 scan (用 finlab tw_minute 抓 1 分 K + resample 60min)"""
+    from golden_silver import scan_golden_silver_60min
+    from finlab import data as _finlab_data
+
+    secs = _finlab_data.get('security_categories')
+    pure = secs[(secs['market'] != 'rotc') & (secs['market'] != 'etf')].copy()
+    pure['stock_id'] = pure['stock_id'].astype(str)
+
+    mv = _finlab_data.get('etl:market_value')
+    mv_last = mv.iloc[-1]
+    mv_last.index = mv_last.index.astype(str)
+    mv_map = mv_last.to_dict()
+    name_map = dict(zip(pure['stock_id'], pure['name']))
+    market_map = dict(zip(pure['stock_id'], pure['market']))
+
+    industry_map = {}
+    try:
+        basic = _finlab_data.get('company_basic_info')
+        if 'stock_id' in basic.columns and '產業類別' in basic.columns:
+            basic['stock_id'] = basic['stock_id'].astype(str)
+            industry_map = dict(zip(basic['stock_id'], basic['產業類別']))
+    except Exception:
+        pass
+
+    # 三大法人 (日頻, 對齊 60分K 最後一日)
+    inst_outer = _finlab_data.get('institutional_investors_trading_summary:外陸資買賣超股數(不含外資自營商)')
+    inst_trust = _finlab_data.get('institutional_investors_trading_summary:投信買賣超股數')
+    inst_dealer = _finlab_data.get('institutional_investors_trading_summary:自營商買賣超股數(自行買賣)')
+    for d in [inst_outer, inst_trust, inst_dealer]:
+        d.columns = d.columns.astype(str)
+    institutional_data = {'foreign': inst_outer, 'trust': inst_trust, 'dealer': inst_dealer}
+
+    # 市值前 N 大
+    pure_filtered = pure[pure['market'].isin(list(market_filter))]
+    mv_top = {sid: v for sid, v in mv_map.items()
+              if v > 0 and sid in pure_filtered['stock_id'].values}
+    sorted_mv = sorted(mv_top.items(), key=lambda x: x[1], reverse=True)
+    stock_ids = [s for s, _ in sorted_mv[:market_cap_top]]
+
+    df = scan_golden_silver_60min(
+        stock_ids=stock_ids,
+        market_cap_map=mv_map,
+        name_map=name_map,
+        market_map=market_map,
+        industry_map=industry_map,
+        institutional_data=institutional_data,
+        ma_fast=ma_fast, ma_mid=ma_mid, ma_slow=ma_slow,
+        vol_fast=vol_fast, vol_slow=vol_slow,
+        days_back=days_back,
+        tolerance_pct=tolerance_pct,
+        vol_shrink_ratio=vol_shrink_ratio,
+        break_threshold=break_threshold,
+    )
+    if min_score > 0 and not df.empty:
+        df = df[df['訊號分數'] >= min_score].copy()
+    return df
+
+
 @st.cache_data(ttl=1800, show_spinner="掃金包銀型態…")
 def _cached_scan(
     market_cap_top: int,
@@ -133,16 +206,27 @@ def render_golden_silver_page():
         "本頁參考新式形態學 SOP：股價在 60MA 與 120MA/240MA 夾擊下 + 量縮 = 突破前的盤整訊號。"
     )
 
+    # ============ 資料頻率 toggle ============
+    freq = st.radio(
+        "📊 資料頻率",
+        options=['日K (預設, 4785 交易日)', '60分K (FinLab tw_minute, 30 天)'],
+        index=0,
+        key="gs_freq",
+        horizontal=True,
+        help="日K = 用 finlab 日頻 (歷史 4785 天); 60分K = 用 finlab tw_minute (30 天 ~ 120 根 60分K, 較敏感)",
+    )
+    is_60min = '60分K' in freq
+
     # ============ 控制面板 ============
     with st.expander("⚙️ 篩選條件", expanded=True):
         col1, col2, col3 = st.columns(3)
         with col1:
             market_cap_top = st.selectbox(
                 "市值前幾大",
-                options=[100, 200, 300, 500, 1000],
-                index=2,
+                options=[50, 100, 200, 300],
+                index=1,
                 key="gs_mv_top",
-                help="用 etl:market_value 最新一日排序",
+                help="用 etl:market_value 最新一日排序 (60分K 模式建議 ≤ 200, 抓取較慢)",
             )
             market_filter = st.multiselect(
                 "市場別",
@@ -152,25 +236,41 @@ def render_golden_silver_page():
                 format_func=lambda x: {'sii': '上市 (sii)', 'otc': '上櫃 (otc)'}.get(x, x),
             )
         with col2:
-            tolerance_pct = st.slider(
-                "🎯 夾擊容差 (%)",
-                min_value=1.0, max_value=10.0, value=3.0, step=0.5,
-                key="gs_tolerance",
-                help="收盤在 60MA 上下 tolerance% 內都算「夾擊下緣」"
-            )
+            if is_60min:
+                tolerance_pct = st.slider(
+                    "🎯 夾擊容差 (%)",
+                    min_value=0.3, max_value=5.0, value=1.0, step=0.1,
+                    key="gs_tolerance",
+                    help="60分K 較敏感, 預設 ±1% (比日K 3% 嚴格)"
+                )
+            else:
+                tolerance_pct = st.slider(
+                    "🎯 夾擊容差 (%)",
+                    min_value=1.0, max_value=10.0, value=3.0, step=0.5,
+                    key="gs_tolerance",
+                    help="收盤在 60MA 上下 tolerance% 內都算「夾擊下緣」"
+                )
             vol_shrink_ratio = st.slider(
-                "📉 量縮門檻 (5日/60日量比 < )",
+                "📉 量縮門檻 (短/長 量比 < )",
                 min_value=0.5, max_value=1.0, value=0.8, step=0.05,
                 key="gs_vol_ratio",
-                help="0.8 = 5 日均量要 < 60 日均量的 80% 才算量縮"
+                help="日K=5日/60日; 60分K=24根/60根 (≈1日/2.5日)"
             )
         with col3:
-            break_threshold = st.slider(
-                "🚀 突破門檻 (收盤/上蓋 MA > )",
-                min_value=1.00, max_value=1.10, value=1.01, step=0.005,
-                key="gs_break",
-                help="1.01 = 收盤要 > 上蓋 MA × 1.01 算有效突破"
-            )
+            if is_60min:
+                break_threshold = st.slider(
+                    "🚀 突破門檻 (收盤/上蓋 MA > )",
+                    min_value=1.00, max_value=1.05, value=1.005, step=0.001,
+                    key="gs_break",
+                    help="60分K 0.5% 即算突破 (比日K 1% 敏感)"
+                )
+            else:
+                break_threshold = st.slider(
+                    "🚀 突破門檻 (收盤/上蓋 MA > )",
+                    min_value=1.00, max_value=1.10, value=1.01, step=0.005,
+                    key="gs_break",
+                    help="1.01 = 收盤要 > 上蓋 MA × 1.01 算有效突破"
+                )
             min_score = st.slider(
                 "⭐ 最低訊號分數 (0-4)",
                 min_value=0, max_value=4, value=1, step=1,
@@ -182,14 +282,26 @@ def render_golden_silver_page():
         st.warning("請選擇至少一個市場別")
         return
 
-    df = _cached_scan(
-        market_cap_top=market_cap_top,
-        market_filter=tuple(market_filter),
-        tolerance_pct=tolerance_pct,
-        vol_shrink_ratio=vol_shrink_ratio,
-        break_threshold=break_threshold,
-        min_score=min_score,
-    )
+    if is_60min:
+        df = _cached_scan_60min(
+            market_cap_top=market_cap_top,
+            market_filter=tuple(market_filter),
+            ma_fast=60, ma_mid=60, ma_slow=60,
+            vol_fast=24, vol_slow=60, days_back=30,
+            tolerance_pct=tolerance_pct,
+            vol_shrink_ratio=vol_shrink_ratio,
+            break_threshold=break_threshold,
+            min_score=min_score,
+        )
+    else:
+        df = _cached_scan(
+            market_cap_top=market_cap_top,
+            market_filter=tuple(market_filter),
+            tolerance_pct=tolerance_pct,
+            vol_shrink_ratio=vol_shrink_ratio,
+            break_threshold=break_threshold,
+            min_score=min_score,
+        )
 
     if df.empty:
         st.warning("沒有符合條件的個股，請放寬篩選條件")
@@ -197,9 +309,15 @@ def render_golden_silver_page():
 
     # ============ 統計指標 ============
     st.divider()
-    last_date = str(df.attrs.get('scan_date', '?')) if hasattr(df, 'attrs') else '?'
-    st.caption(
-        f"📅 資料日期 **{_get_last_date()}** ｜ 符合條件 **{len(df)} 檔**"
+    if is_60min:
+        last_data_time = df['資料時間'].max() if not df.empty and '資料時間' in df.columns else None
+        last_data_str = last_data_time.strftime('%Y-%m-%d %H:%M') if pd.notna(last_data_time) else '?'
+        st.caption(
+            f"📅 資料時間 **{last_data_str}** (60分K) ｜ 符合條件 **{len(df)} 檔**"
+        )
+    else:
+        st.caption(
+            f"📅 資料日期 **{_get_last_date()}** ｜ 符合條件 **{len(df)} 檔**"
     )
 
     m1, m2, m3, m4, m5 = st.columns(5)
@@ -259,34 +377,74 @@ def render_golden_silver_page():
     # ============ 完整明細表 ============
     st.divider()
     st.markdown("#### 📋 完整明細表")
-    display_df = df_sorted[[
-        'stock_id', '名稱', '市場', '產業', '市值(億)',
-        '收盤', '60MA', '120MA', '240MA', 'upper_ma',
-        '夾擊帶寬度%', '60MA距離%', '上蓋距離%',
-        '5日均量(張)', '60日均量(張)', '量縮比',
-        '突破120MA', '突破240MA', '近5日內突破', '實體長紅',
-        '外陸資當日', '外陸資3日', '外陸資5日',
-        '投信當日', '投信3日', '投信5日',
-        '自營商當日', '自營商3日', '自營商5日',
-        '訊號', '訊號分數',
-    ]].copy()
+    if is_60min:
+        # 60分K 模式: 動態取得 MA 欄位名 (ma_fast/ma_mid/ma_slow)
+        ma_fast_col = f'MA{df.attrs.get("ma_fast", 60)}' if hasattr(df, 'attrs') else 'MA60'
+        ma_mid_col = f'MA{df.attrs.get("ma_mid", 60)}' if hasattr(df, 'attrs') else 'MA60'
+        ma_slow_col = f'MA{df.attrs.get("ma_slow", 60)}' if hasattr(df, 'attrs') else 'MA60'
+        vol_fast_col = next((c for c in df.columns if c.startswith('量MA') and c.endswith('(根)')), '量MA24(根)')
+        vol_slow_col = next((c for c in df.columns if c.startswith('量MA') and c != vol_fast_col), '量MA60(根)')
+        # 取 ma_fast 對應距離欄
+        dist_col = f'MA{ma_fast_col[2:]}距離%'
+
+        display_df = df_sorted[[
+            'stock_id', '名稱', '市場', '產業', '市值(億)', '資料時間',
+            '收盤', ma_fast_col, ma_mid_col, ma_slow_col, 'upper_ma',
+            '夾擊帶寬度%', dist_col, '上蓋距離%',
+            vol_fast_col, vol_slow_col, '量縮比',
+            f'突破MA{ma_mid_col[2:]}', f'突破MA{ma_slow_col[2:]}', '近5日內突破', '實體長紅',
+            '外陸資當日', '外陸資3日', '外陸資5日',
+            '投信當日', '投信3日', '投信5日',
+            '自營商當日', '自營商3日', '自營商5日',
+            '訊號', '訊號分數',
+        ]].copy()
+    else:
+        display_df = df_sorted[[
+            'stock_id', '名稱', '市場', '產業', '市值(億)',
+            '收盤', '60MA', '120MA', '240MA', 'upper_ma',
+            '夾擊帶寬度%', '60MA距離%', '上蓋距離%',
+            '5日均量(張)', '60日均量(張)', '量縮比',
+            '突破120MA', '突破240MA', '近5日內突破', '實體長紅',
+            '外陸資當日', '外陸資3日', '外陸資5日',
+            '投信當日', '投信3日', '投信5日',
+            '自營商當日', '自營商3日', '自營商5日',
+            '訊號', '訊號分數',
+        ]].copy()
     # 格式化
-    for col in ['60MA', '120MA', '240MA', 'upper_ma']:
-        display_df[col] = display_df[col].apply(lambda x: f"{x:,.2f}")
+    ma_cols = [c for c in display_df.columns if c.startswith('MA') and c != 'MA60距離%' and '(' not in c]
+    for col in ma_cols + ['upper_ma']:
+        if col in display_df.columns:
+            display_df[col] = display_df[col].apply(lambda x: f"{x:,.2f}")
     display_df['收盤'] = display_df['收盤'].apply(lambda x: f"{x:,.2f}")
     for col in ['夾擊帶寬度%', '60MA距離%', '上蓋距離%']:
-        display_df[col] = display_df[col].apply(lambda x: f"{x:+.2f}%")
+        if col in display_df.columns:
+            display_df[col] = display_df[col].apply(lambda x: f"{x:+.2f}%")
+    # 60分K 模式的 MA 距離欄 (MA60距離% 已處理, MA{N}距離% 也要處理)
+    for col in display_df.columns:
+        if col.startswith('MA') and col.endswith('距離%'):
+            display_df[col] = display_df[col].apply(lambda x: f"{x:+.2f}%")
     display_df['量縮比'] = display_df['量縮比'].apply(lambda x: f"{x:.3f}")
     for col in ['5日均量(張)', '60日均量(張)']:
+        if col in display_df.columns:
+            display_df[col] = display_df[col].apply(lambda x: f"{x:,.0f}")
+    for col in [c for c in display_df.columns if c.startswith('量MA') and c.endswith('(根)')]:
         display_df[col] = display_df[col].apply(lambda x: f"{x:,.0f}")
     for col in ['突破120MA', '突破240MA', '近5日內突破', '實體長紅']:
+        if col in display_df.columns:
+            display_df[col] = display_df[col].apply(lambda x: '✅' if x else '—')
+    for col in [c for c in display_df.columns if c.startswith('突破MA')]:
         display_df[col] = display_df[col].apply(lambda x: '✅' if x else '—')
-    # 三大法人 9 欄 (張, 帶正負號 + 顏色標記)
+    # 三大法人 9 欄 (張, 帶正負號)
     for col in ['外陸資當日', '外陸資3日', '外陸資5日',
                 '投信當日', '投信3日', '投信5日',
                 '自營商當日', '自營商3日', '自營商5日']:
-        display_df[col] = display_df[col].apply(lambda x: f"{x:+,.0f}")
+        if col in display_df.columns:
+            display_df[col] = display_df[col].apply(lambda x: f"{x:+,.0f}")
     display_df['市值(億)'] = display_df['市值(億)'].apply(lambda x: f"{x:,.0f}")
+    if is_60min and '資料時間' in display_df.columns:
+        display_df['資料時間'] = display_df['資料時間'].apply(
+            lambda x: x.strftime('%Y-%m-%d %H:%M') if pd.notna(x) else '?'
+        )
     st.dataframe(display_df, hide_index=True, width="stretch", height=600)
 
     # ============ CSV 下載 ============

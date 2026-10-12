@@ -85,7 +85,7 @@ def _cached_kline_data():
     }
 
 
-@st.cache_data(ttl=1800, show_spinner="掃 60分K 金包銀型態（每檔抓 30 天 1 分 K, 首次較慢）…")
+@st.cache_data(ttl=1800, show_spinner="掃 60分K 金包銀型態（優先本地增量, fallback finlab tw_minute）…")
 def _cached_scan_60min(
     market_cap_top: int,
     market_filter: tuple,
@@ -138,6 +138,15 @@ def _cached_scan_60min(
               if v > 0 and sid in pure_filtered['stock_id'].values}
     sorted_mv = sorted(mv_top.items(), key=lambda x: x[1], reverse=True)
     stock_ids = [s for s, _ in sorted_mv[:market_cap_top]]
+
+    # 顯示本地增量資料狀態
+    from kbar_fetcher import INCREMENTAL_DIR, has_local_incremental
+    if INCREMENTAL_DIR.exists():
+        local_count = sum(1 for sid in stock_ids if has_local_incremental(sid))
+        st.caption(
+            f"💾 **本地 60分K 增量**: `{INCREMENTAL_DIR}` "
+            f"（{local_count}/{len(stock_ids)} 檔有本地資料, 沒有自動 fallback finlab tw_minute）"
+        )
 
     df = scan_golden_silver_60min(
         stock_ids=stock_ids,

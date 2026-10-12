@@ -12,6 +12,7 @@ kbar_fetcher.py — 個股 60分K 抓取 (用 finlab tw_minute API)
 import pandas as pd
 from typing import Optional
 from functools import lru_cache
+from pathlib import Path
 
 
 @lru_cache(maxsize=128)
@@ -118,3 +119,45 @@ if __name__ == '__main__':
     df2 = fetch_60min_kbar('2330', '2026-10-01', '2026-10-08')
     print(f"2330 60分K (cache): {time.time()-t0:.3f}s, {len(df2)} 根")
     print(f"前 3 筆:\n{df.head(3)}")
+
+
+# ============================================================
+# 整合: 優先讀本地增量 (launchd daily_increment 累積的 parquet), fallback finlab
+# ============================================================
+INCREMENTAL_DIR = Path(__file__).resolve().parent / 'data' / 'kbars_60min_incremental'
+
+
+def has_local_incremental(stock_id: str) -> bool:
+    """檢查本地增量資料夾是否有該股 parquet"""
+    if not INCREMENTAL_DIR.exists():
+        return False
+    path = INCREMENTAL_DIR / f'{stock_id}.parquet'
+    return path.exists() and path.stat().st_size > 100
+
+
+def get_stock_60min(stock_id: str, days_back: int = 30) -> tuple[pd.DataFrame, str]:
+    """
+    取得個股 60分K 資料 (優先本地增量, fallback finlab tw_minute)
+
+    Args:
+        stock_id: 股票代號
+        days_back: 從今天往前抓幾天 (finlab fallback 用)
+
+    Returns:
+        (df, source) — source 是 'local_incremental' 或 'finlab_live'
+    """
+    # 1. 試本地增量
+    if has_local_incremental(stock_id):
+        try:
+            df = pd.read_parquet(INCREMENTAL_DIR / f'{stock_id}.parquet')
+            if not df.empty:
+                return df, 'local_incremental'
+        except Exception:
+            pass
+
+    # 2. fallback finlab
+    from datetime import datetime, timedelta
+    end = datetime.now().strftime('%Y-%m-%d')
+    start = (datetime.now() - timedelta(days=days_back + 5)).strftime('%Y-%m-%d')
+    df = fetch_60min_kbar(stock_id, start, end)
+    return df, 'finlab_live'

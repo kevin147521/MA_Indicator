@@ -420,7 +420,7 @@ def scan_golden_silver_60min(
     Returns:
         DataFrame 每檔一列
     """
-    from kbar_fetcher import fetch_60min_kbar
+    from kbar_fetcher import get_stock_60min
     from finlab import data as _finlab_data
     from datetime import datetime, timedelta
 
@@ -431,7 +431,7 @@ def scan_golden_silver_60min(
     rows = []
     for sid in stock_ids:
         try:
-            k60 = fetch_60min_kbar(sid, start_date, end_date)
+            k60, _source = get_stock_60min(sid, days_back=days_back)
         except Exception:
             continue
         if k60 is None or k60.empty or len(k60) < ma_slow:

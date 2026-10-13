@@ -1,5 +1,5 @@
 # finlab 量化平台
-finlab>=2.0.13
+finlab>=2.2.11
 
 # Streamlit
 streamlit>=1.30
@@ -10,3 +10,7 @@ plotly>=5.18
 # Data
 pandas>=2.0
 numpy>=1.24
+
+# Streamlit Cloud 必裝
+cryptography>=41.0  # finlab credentials.json Fernet 加密
+requests>=2.31

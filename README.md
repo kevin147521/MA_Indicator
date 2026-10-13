@@ -1,200 +1,168 @@
-# 台股分析平台 (MA_Indicator)
+# 台股分析平台 (MA_Indicator) 📊
 
-個人用的台股量化分析平台，Streamlit + FinLab **9 個頁面**：
+個人用的台股量化分析平台，**Streamlit + FinLab**，**11 個頁面**。
 
-1. **📈 均線預測** — 個股 K 線 + 5/10/20/60 MA，預測下個交易日收盤後均線。**支援日K/週K 切換 + 寶塔線（單日/三日轉向）對照**
-2. **🗺️ 市值漲跌地圖** — 全台股 treemap（市值/成交 vs 漲跌幅，台股配色）
-3. **📊 主動 ETF 持股** — etfinfo.tw 公開 API：40 檔主動 ETF + 117 個股加碼排行 + 26 共識訊號 + 20 產業資金流 + 今日異動 + 過去 N 天加碼排行
-4. **📊 被動 ETF 追蹤** — 26 檔台股主流被動 ETF 折溢價 + 持股
-5. **🔍 均線收復** — 全市場掃描「曾跌破 MA，後續收復且 MA60 往上」個股（含 K 線展開 + 市值排序）
-6. **🧪 跌破站回回測** — 跌破 N MA 後要幾天才能站回並創新高
-7. **💰 融資維持率** — 大盤融資維持率 + 上市/上櫃融資餘額 + 買賣超
-8. **🧬 基因策略組合** — 從 `Finlab組合策略_20260226.ipynb` 抽出：16 個歷史 best cond combo（CAGR 138.5%~200.6%）+ 41 個條件自由組合 + 蒙地卡羅壓力測試 + 對大盤 Omega Ratio
-9. **🔄 資料更新** — 手動按鈕 + launchd 21:20 自動排程
-
-**🧬 第 8 個「基因策略組合」page**（從 FinLab notebook 抽出）頁面結構：
-- 📚 預設組合：16 個 cell 註解的 best cond 組合（CAGR 138.5% ~ 200.6%）
-- 🧪 自訂組合：41 個條件按 9 個分類（營收/技術/流動/價量/波動/新高/KD/大戶/市值）checkbox 自由勾選
-- 💼 Portfolio 組合：4 策略 1/4 等權重組合（沿用 notebook cell 7-8）
-- 🎲 蒙地卡羅壓力：bootstrap 95/97.5/99/99.7% 4 分位 Sortino/Omega 衰減
-
-**💹 第 9 個「💹 主力訊號」功能（已融入 V1 sidebar）**
-
-⚠️ finlab 公開資料沒有「逐筆大單/特大單/內外盤/三大法人買賣超/融資餘額/借券」
-**唯一可用日頻買賣方向資料 = 融資買賣 (margin_transactions)**
-本頁用融資淨買當「主力 / 槓桿買方」方向的代理指標，跟券商逐筆大單會有差異，僅供研究參考。
-（2026-09-19 重寫 — 早版誤用集保庫存分級當大戶買賣力代理是錯的，集保是「誰持有」週頻不是「當天買賣」日頻）
-
-**檢視方式**：
-
-V1 sidebar radio 第 9 個選項 `💹 主力訊號`，直接點就切換。
-
-URL: http://127.0.0.1:8765 → 點 sidebar「💹 主力訊號」
-
-**功能（兩大 tab）**：
-
-### Tab 1: 🎯 個股主力訊號
-- 個股選擇（熱門 + 全市場前 300 檔）+ 時間範圍 pills (1M/3M/6M/1Y/全部)
-- 5+3 個 metric：融資買進/賣出/淨買/成交量/主力力道% + 融資買賣比%/5日累計淨買/融券淨增
-- 3-row subplot 時間序列圖（融資買賣比% / 淨買張數 / 主力力道5日%）
-- 5 區域判斷（主力進場/調節/減碼/撤離/盤整）+ 3 等級強弱（買方強勢/中性/賣方強勢）
-- 最近 20 日明細表 + 公式說明 expander
-
-### Tab 2: 📊 全市場主力力道掃描
-- 控制面板：市值前 N 大 (100/200/300/500) + 主力力道% 門檻 slider + 只列「股價上漲/融資淨增加」checkbox
-- 5 個 metric：符合條件/主力力道 ≥10%/5-10%/平均/最高
-- 🏆 主力力道% 排名 Top 30 horizontal bar chart
-- 完整明細表（可下載 CSV）
-- 公式說明 expander
-
-**主力力道% 公式**：
-```
-主力力道% = 融資淨買(股) / 成交量(股) × 100
-```
-- ≥10%：主力主導（融資買盤佔當日成交 10%+，槓桿買方真進場）
-- 5~10%：中度主力
-- 2~5%：輕度主力
-- <2%：微量主力
-
-**備用獨立頁面**（不在 V1 sidebar 內，port 8767）：
-- 已有獨立檔案 `big_player_app.py` + `start_big_player.command`
-- 預設沒啟動，要用時雙擊 `start_big_player.command` 即可
-- 共用同一個 `big_player_page.py` helper，不會重複維護
-
-### 已組成的資料版本
-
-跑完 sim() + Portfolio 會自動存成「資料版本」，方便日後比較/部署：
-
-| 位置 | 內容 |
-|---|---|
-| `~/.openclaw/ma_indicator_data/portfolio_versions.db` | V2 SQLite，每個版本 1 row（含 version/date/portfolio_cagr/mdd/sortino/omega_vs_market + 完整 raw_json） |
-| `data/portfolio_versions/{version}.json` | 給 git 版本控制的 JSON snapshot（含 4 個獨立策略 stats + Portfolio stats + 模擬參數） |
-
-**目前已存**：`v1_combination_1`（2026-09-15，notebook cell 7 的 4 策略 1/4 等權組合）— CAGR +98.8%, MDD -28.5%, Sortino 4.31, Omega vs 大盤 1.388。
-
-查詢範例：
-```python
-import sqlite3
-conn = sqlite3.connect("/Users/kevin/.openclaw/ma_indicator_data/portfolio_versions.db")
-for row in conn.execute("SELECT version, portfolio_cagr, portfolio_sortino FROM portfolio_versions"):
-    print(row)
-```
+V2 (備份用) 在 [MA_Indicator_V2](../MA_Indicator_V2) 子資料夾（5 個核心 page 簡化版）。
 
 ---
 
-## 本地啟動
+## 🚀 快速啟動 (公司用)
 
 ```bash
-# 1. 確認 finlab 登入（會自動讀 ~/.finlab/credentials.json）
-/opt/anaconda3/envs/finlab3/bin/python -c "import finlab; finlab.login()"
+# 1. Clone repo
+git clone https://github.com/kevin147521/MA_Indicator.git
+cd MA_Indicator
 
-# 2. 啟動 streamlit
-./start.command
-# 或：/opt/anaconda3/envs/finlab3/bin/streamlit run app.py
+# 2. 建立 finlab3 conda env (跟 dev 環境一致)
+conda create -n finlab3 python=3.13 -y
+conda activate finlab3
+pip install -r requirements.txt
+
+# 3. 設定 finlab 登入 (選一種)
+#    (a) 互動登入:  python -c "import finlab; finlab.login()"
+#    (b) 環境變數:  export FINLAB_API_TOKEN=your_token
+#    (c) 加密檔:    python -c "from finlab_config import login_finlab; login_finlab()"
+
+# 4. 啟動 streamlit
+streamlit run app.py --server.port 8765 --server.headless true
+# 開瀏覽器 http://localhost:8765
 ```
 
-開瀏覽器到 `http://127.0.0.1:8765`
+公司用建議：
+- 用 **`ngrok` / `cloudflared` tunnel** 從公司外部訪問 (參考 `~/.openclaw/jobs/holders-public.sh` SOP)
+- 或在 **公司內網 server** 跑 `nohup streamlit run app.py` + 開放 port
 
 ---
 
-## 對外發佈（Streamlit Community Cloud）
+## 📑 11 個 Pages (sidebar radio)
 
-**前置**：
-1. GitHub 帳號
-2. 註冊 https://share.streamlit.io/
-3. FinLab API token（或 finlab_config 模組，本機的 `~/.finlab/credentials.json` 在雲端不能直接用）
+### 1. 📈 **均線預測** — 個股 K 線 + 5/10/20/60 MA
+- 預測下個交易日收盤後均線
+- 支援日K/週K 切換
+- 寶塔線 (單日/三日轉向) 對照
 
-### 部署步驟
+### 2. 🗺️ **市值漲跌地圖** — 全台股 treemap
+- 階層：市場 → 產業 → 個股
+- 方塊大小 = 市值 / 顏色 = 漲跌幅 (台股紅漲綠跌)
+- 排行 sub-tab: 漲幅前 20 / 跌幅前 20 (含當日/3日 成交金額)
 
-1. **推到 GitHub**
-   ```bash
-   cd ~/Desktop/排程運算/MA_Indicator
-   git init  # 第一次
-   git add .
-   git commit -m "init"
-   git remote add origin https://github.com/<你的帳號>/MA_Indicator.git
-   git push -u origin main
-   ```
+### 3. 📊 **主動 ETF 持股** — etfinfo.tw 公開 API
+- 40 檔主動 ETF + 117 個股加碼排行
+- 26 共識訊號 + 20 產業資金流 + 今日異動
 
-2. **連結 Streamlit Cloud**
-   - https://share.streamlit.io/ → New app
-   - Repo：選剛推的 MA_Indicator
-   - Branch：main
-   - Main file path：`app.py`
-   - Advanced settings → Python version：3.13（或 finlab 2.0.13 支援的版本）
+### 4. 📊 **被動 ETF 追蹤** — 26 檔台股主流被動 ETF
+- 折溢價 + 持股
 
-3. **設定 Secrets**（finlab API token）
-   - 點 app → Settings → Secrets
-   - 貼上：
-     ```toml
-     FINLAB_API_TOKEN = "your_finlab_token_here"
-     ```
-   - 怎麼拿 token：登入 https://finlab.finance → Settings → API Token
+### 5. 🔍 **均線收復** — 全市場掃描
+- 「曾跌破 MA，後續收復且 MA60 往上」個股
+- 含 K 線展開 + 市值排序
 
-4. **Deploy**
-   - 點 Deploy
-   - 第一次會跑 `pip install -r requirements.txt`（3~5 分鐘）
-   - 之後 streamlit 會把 URL 給你，像 `https://<user>-ma-indicator.streamlit.app`
+### 6. 🧪 **跌破站回回測**
+- 跌破 N MA 後要幾天才能站回並創新高
 
-### 雲端限制 & 注意事項
+### 7. 💰 **融資維持率**
+- 大盤融資維持率 + 上市/上櫃融資餘額 + 買賣超
 
-- **1 GB RAM**：均線頁、treemap 頁 OK；「全市場均線回測」1089 檔 OK（前面實測），但「下載 58 萬筆事件 CSV」會 OOM，已用 `@st.dataframe(...head(500))` 限制
-- **5000 MB/day quota**：`🔄 資料更新` 預設 `force=false`，**不會扣 quota**。勾「強制重抓」會在 1 分鐘內用 1000+ MB，每天只能用幾次
-- **不要部署後馬上點「強制重抓」**：第一次部署 streamlit cloud 沒有 finlab cache，會從 finlab 抓 15 個 data source，**直接燒光 daily quota**
-- **推薦流程**：部署完先到 `🔄 資料更新` 點「▶️ 立即更新」**不勾強制重抓**，用 finlab 內建 cache 跑（<5 秒），純顯示「已就緒」狀態
+### 8. 🧬 **基因策略組合** — 從 FinLab notebook 抽出
+- 📚 預設組合: 16 個 best cond combo (CAGR 138.5%~200.6%)
+- 🧪 自訂組合: 41 個條件按 9 個分類 checkbox 自由勾選
+- 💼 Portfolio 組合: 4 策略 1/4 等權重
+- 🎲 蒙地卡羅壓力測試: bootstrap 95/97.5/99/99.7% 分位 Sortino/Omega 衰減
+
+### 9. 💹 **主力訊號** (重寫) — 融資買賣代理 + 三大法人
+- 融資買賣 (margin_transactions) 當「主力 / 槓桿買方」代理
+- 三大法人: 外資/投信/自營商 當日/3日/5日 累計淨買超
+- 個股查詢 + 全市場掃描 + 整體市值排名
+
+⚠️ finlab 公開資料**沒有**「逐筆大單/特大單/內外盤」，本頁用融資淨買當代理指標，跟券商逐筆大單會有差異，僅供研究參考。
+
+### 10. 📐 **金包銀形態掃描** (新式形態學 SOP)
+- **日K 模式**: K 線 + 60/120/240 MA 夾擊 + 量縮 + 突破 + 長紅 4 條件評分
+- **60分K 模式**: 用 finlab 內建 `tw_price_60min:*` (從 2026-01-02 起, 187 個交易日, 935 根)
+  - 預設 SOP 60/120/240 棒 (對應日K 60/120/240MA 概念)
+  - MA 60 (短線) / 120 (中線) / 240 (長線)
+  - 4 種訊號: 🟢 突破表態 / 🟢 突破後回踩 / 🟡 量縮整理 / ⚪ 觀察
+- 完整明細表: 收盤 + 當日/3日 漲跌% + 當日/3日 金額(億) + 張數 + MA + 夾擊帶寬度 + 突破 + 三大法人
+- **📊 個股量價技術表**: 從 scan 結果或手動輸入個股代號，顯示 60分K K棒 + MA + 成交量 (5 個關鍵指標 + scan 結果對照)
+
+### 11. 🔄 **資料更新**
+- 手動按鈕 + launchd 21:20 自動排程 (Finlab 日頻 + 60分K)
+- finlab OAuth/cert 認證統一從 `finlab_config.login_finlab()`
 
 ---
 
-## 專案結構
+## 🔐 Finlab 登入統一入口
+
+`finlab_config.py` 三級優先：
+1. `FINLAB_API_TOKEN` 環境變數
+2. `~/.finlab/credentials.json` (Fernet 加密, chmod 600)
+3. 互動登入 (第一次會問)
+
+`Streamlit Cloud` deploy 可用 `st.secrets["FINLAB_API_TOKEN"]` (見 `data_fetcher.py`)。
+
+---
+
+## 📦 技術棧
+
+- **Python 3.13** (conda env `finlab3`)
+- **Streamlit >= 1.30** — Web UI
+- **finlab >= 2.2.11** — 台股資料 API (注意：2026-10-14 升級消 "Your version is 2.2.10" 警告)
+- **Plotly >= 5.18** — K 線圖 / treemap / 量價技術表
+- **pandas / numpy**
+
+---
+
+## 📁 專案結構
 
 ```
 MA_Indicator/
-├── app.py                       # Streamlit 主程式（5 個 page 路由）
-├── ma_engine.py                 # 均線計算純函式
-├── barchart_engine.py           # 寶塔線 + 日K/週K resample
-├── ma_breakout_backtest.py      # 跌破/站回事件偵測
-├── margin_page.py               # 融資維持率
-├── treemap_page.py              # 全市場 treemap
-├── data_fetcher.py              # finlab 抓資料 + ensure_finlab_login
-├── data_update.py               # 排程手動 finlab 資料更新
-├── start.command                # 本機雙擊啟動
-├── stop.command                 # 本機雙擊停止
-├── requirements.txt             # Python 套件
-└── .gitignore                   # 排除 __pycache__ / .streamlit/secrets
+├── app.py                          # Streamlit 主入口 (含 11 個 page 路由)
+├── golden_silver.py                # 金包銀型態演算法 (日K + 60分K scan)
+├── golden_silver_page.py           # 金包銀 page UI (含個股量價技術表)
+├── kbar_fetcher.py                 # 60分K 抓取 (用 finlab 內建 tw_price_60min)
+├── big_player.py / big_player_page.py
+├── ma_engine.py / ma_recovery_scanner.py
+├── portfolio_strategy.py / portfolio_strategy_page.py
+├── etf_holdings_page.py / passive_etf_page.py
+├── margin_page.py
+├── data_fetcher.py / data_update.py
+├── barchart_engine.py / ma_breakout_backtest.py
+├── finlab_config.py                # 統一登入入口
+├── requirements.txt
+├── .gitignore                      # 過濾 .log / .command / .feather / .env
+├── pages/_v1_compat/               # V2 共用 module (B 方案備份)
+├── data/                           # 快取 (gitignored)
+└── logs/                           # 本機 log (gitignored)
 ```
 
-### 寶塔線說明
+---
 
-均線預測頁左側可切換：
+## ⚠️ 已知限制
 
-- **K線週期**：日K / 週K（週K = 日線 resample `W-FRI`，Open=週內首日、Close=週內末日）
-- **寶塔線模式**：
-  - 單日比較：今日收 vs 昨日收，方向直接是 up/down
-  - 三日轉向（經典）：連續 N 日同向才視為新趨勢，N 可調 2~5（過濾雜訊）
-- **視覺**：紅色實體 = 漲、綠色空心 = 跌（台股慣例），疊在 K 線下方當副圖
-- **對照分析**：顯示目前趨勢、連續根數、上次反轉日期、寶塔線 vs 均線訊號是否一致
-
-週K 模式注意：回看週數 slider 最小 60 週（要算 MA60），預設 60 週。
+- **finlab 沒有** 逐筆大單/特大單/內外盤 → 主力訊號 page 用融資買賣當代理
+- **60分K finlab 內建** 從 2026-01-02 起, 187 個交易日, 935 根 (5 根/天, 10:00/11:00/12:00/13:00/13:33)
+- **中小型股** finlab `tw_minute` 90 天回溯會報 "Request between 1 and 31 days" (覆蓋率不足, 用 7 天範圍 fallback)
+- **finlab `tw_price_60min:成交量`** 5 根加總 ≠ 整天, 算整天金額用日頻 `price:成交股數 × price:收盤價`
 
 ---
 
-## 開發注意事項
+## 📝 Changelog (重要 commit)
 
-- `data_fetcher.ensure_finlab_login()` 是所有 page 抓資料前的統一入口
-  - 本地：讀 `~/.finlab/credentials.json`（finlab 2.x 自動處理）
-  - 雲端：讀 `st.secrets["FINLAB_API_TOKEN"]`
-  - 都找不到才 fall back 到 `finlab.login()` 互動
-- `treemap_page.return_ratio` 基準日 = `close_data.iloc[0]`（區間累計），不要用 `iloc[-2]`（會誤算單日）
-- `margin_page.build_margin_data` / `plot_margin_trend` 都有 `start > end` 自動 swap（避免 plotly 噴 index out of bounds）
+- `cfb1e53` V1 60分K 每日增量 (reverted: 改用 finlab 內建)
+- `7897227` 金包銀 page 加 60分K 模式
+- `60bc1d0` 金包銀明細表加三大法人 9 欄
+- `5698504` 金包銀 page (新式形態學 SOP)
+- `16ec3b0` 主力訊號 page 重寫
+- `3e1c027` 整體市值排名加當日成交金額
+- (2026-10-14) finlab `tw_price_60min` 從 9/1 擴展到 1/2 (完整 SOP 60/120/240 支援)
+- (2026-10-14) 金包銀加 6 個欄位: 當日/3日 漲跌% / 金額(億) / 張數
+- (2026-10-14) 加 📊 個股量價技術表 (K 棒 + MA + 成交量)
+- (2026-10-14) 加 當日/3日 成交金額(億) 到市值漲跌地圖 + 金包銀完整明細表
 
 ---
 
-## FinLab login 設定細節
+## 🔒 隱私
 
-`ensure_finlab_login()` 順序（**雲端跟本地都通用**）：
-
-1. `from finlab_config import login_finlab`（自定模組，本地專用）
-2. `st.secrets["FINLAB_API_TOKEN"]`（**Streamlit Cloud 設這裡**）
-3. `os.environ["FINLAB_API_TOKEN"]`（環境變數，CLI 用）
-4. `~/.finlab/credentials.json`（finlab 2.x 自動讀，本機有跑過 `finlab.login()` 就有）
-5. `finlab.login()` 互動登入（fallback）
+- ✅ 無 API key / token / 密碼 hardcode (都用 `st.secrets` / env / `finlab_config`)
+- ✅ `.gitignore` 過濾 `.streamlit/secrets.toml` / `*.log` / `*.feather` / `.env`
+- ✅ 用戶端登入 finlab 走 OAuth 流程, 不存個資

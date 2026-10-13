@@ -344,6 +344,17 @@ def scan_golden_silver(
                 inst_cols[f'{col_prefix}3日'] = sum(aligned[-3:]) / 1000
                 inst_cols[f'{col_prefix}5日'] = sum(aligned[-5:]) / 1000
 
+        # 當日 / 3 日 漲跌% (從 close_df 算)
+        pct_1d = pct_3d = 0.0
+        if close_df is not None and sid in close_df.columns:
+            daily_c = close_df[sid].dropna()
+            if len(daily_c) >= 2:
+                pct_1d = (float(daily_c.iloc[-1]) - float(daily_c.iloc[-2])) / float(daily_c.iloc[-2]) * 100
+                if len(daily_c) >= 4:
+                    pct_3d = (float(daily_c.iloc[-1]) - float(daily_c.iloc[-4])) / float(daily_c.iloc[-4]) * 100
+                else:
+                    pct_3d = (float(daily_c.iloc[-1]) - float(daily_c.iloc[0])) / float(daily_c.iloc[0]) * 100
+
         row = {
             'stock_id': sid,
             '名稱': name_map.get(sid, '?'),
@@ -351,6 +362,8 @@ def scan_golden_silver(
             '產業': industry_map.get(sid, '?'),
             '市值(億)': round(market_cap_map.get(sid, 0) / 1e8, 1) if market_cap_map.get(sid, 0) > 0 else 0,
             '收盤': last_close,
+            '當日漲跌幅%': round(pct_1d, 2),
+            '3日累積漲跌幅%': round(pct_3d, 2),
             '60MA': round(ma60_last, 2),
             '120MA': round(ma120_last, 2),
             '240MA': round(ma240_last, 2),
@@ -427,6 +440,17 @@ def scan_golden_silver_60min(
     end_date = datetime.now().strftime('%Y-%m-%d')
     # 抓 days_back 天 + 一些 buffer 確保有 240 根 60分K
     start_date = (datetime.now() - timedelta(days=days_back + 30)).strftime('%Y-%m-%d')
+
+    # ============ 日頻 finlab 資料 (整天的成交股數 / 收盤價) ============
+    # finlab 60分K volume 是「該時段」不是整天累計, 不能用來算整天金額
+    # 用日頻 price:成交股數 (股) 跟 price:收盤價 算整天
+    daily_vol_df = None
+    daily_close_df = None
+    try:
+        daily_vol_df = _finlab_data.get('price:成交股數')  # 全市場, 單位 股
+        daily_close_df = _finlab_data.get('price:收盤價')  # 全市場
+    except Exception:
+        pass
 
     rows = []
     for sid in stock_ids:
@@ -530,6 +554,48 @@ def scan_golden_silver_60min(
                 inst_cols[f'{col_prefix}3日'] = sum(aligned[-3:]) / 1000
                 inst_cols[f'{col_prefix}5日'] = sum(aligned[-5:]) / 1000
 
+        # 每日 stats (從日頻 finlab 拿, 單位: 股, 收盤價)
+        # finlab 60分K volume 5 根加總不等於整天 (差 1185 倍), 必須用日頻
+        pct_1d = pct_3d = 0.0
+        vol_today = vol_3d_avg = 0.0
+        amount_today = amount_3d_avg = 0.0
+        if daily_close_df is not None and sid in daily_close_df.columns:
+            daily_c = daily_close_df[sid].dropna()
+            if len(daily_c) >= 2:
+                close_today = float(daily_c.iloc[-1])
+                close_prev = float(daily_c.iloc[-2])
+                pct_1d = (close_today - close_prev) / close_prev * 100 if close_prev else 0.0
+                # 3 日前 = 倒數第 4 個交易日 (當日 + 前 3 天)
+                if len(daily_c) >= 4:
+                    close_3d_ago = float(daily_c.iloc[-4])
+                    pct_3d = (close_today - close_3d_ago) / close_3d_ago * 100 if close_3d_ago else 0.0
+                else:
+                    pct_3d = (close_today - float(daily_c.iloc[0])) / float(daily_c.iloc[0]) * 100
+        if daily_vol_df is not None and sid in daily_vol_df.columns:
+            daily_v = daily_vol_df[sid].dropna()
+            if len(daily_v) >= 1:
+                vol_today = float(daily_v.iloc[-1]) / 1000  # 股 → 張
+                if len(daily_v) >= 3:
+                    vol_3d_avg = float(daily_v.iloc[-3:].mean()) / 1000
+                else:
+                    vol_3d_avg = float(daily_v.mean()) / 1000
+            # 金額 (億) = 收盤價 × 成交股數
+            if daily_close_df is not None and sid in daily_close_df.columns:
+                daily_c = daily_close_df[sid].dropna()
+                if len(daily_c) >= 1 and len(daily_v) >= 1:
+                    # 對齊到共同的最後幾天
+                    n_today = min(len(daily_c), len(daily_v))
+                    last_close_today = float(daily_c.iloc[-1])
+                    amount_today = last_close_today * float(daily_v.iloc[-1]) / 1e8  # 元 → 億
+                    if n_today >= 3:
+                        amount_3d_avg = sum(
+                            float(daily_c.iloc[-i]) * float(daily_v.iloc[-i]) for i in range(1, 4)
+                        ) / 3 / 1e8
+                    else:
+                        amount_3d_avg = sum(
+                            float(daily_c.iloc[-i]) * float(daily_v.iloc[-i]) for i in range(1, n_today + 1)
+                        ) / n_today / 1e8
+
         row = {
             'stock_id': sid,
             '名稱': name_map.get(sid, '?'),
@@ -538,6 +604,12 @@ def scan_golden_silver_60min(
             '市值(億)': round(market_cap_map.get(sid, 0) / 1e8, 1) if market_cap_map.get(sid, 0) > 0 else 0,
             '資料時間': last_idx,
             '收盤': last_close,
+            '當日漲跌幅%': round(pct_1d, 2),
+            '3日累積漲跌幅%': round(pct_3d, 2),
+            '當日成交金額(億)': round(amount_today, 2),
+            '3日平均成交金額(億)': round(amount_3d_avg, 2),
+            '當日成交張數': round(vol_today, 0),
+            '3日平均成交張數': round(vol_3d_avg, 0),
             f'MA{ma_fast}': round(ma_fast_last, 2),
             f'MA{ma_mid}': round(ma_mid_last, 2),
             f'MA{ma_slow}': round(ma_slow_last, 2),

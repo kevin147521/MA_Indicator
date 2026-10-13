@@ -11,6 +11,8 @@ __pycache__/
 # Streamlit
 .streamlit/secrets.toml
 .streamlit/credentials.toml
+.holders-streamlit-*.log
+.streamlit/
 
 # macOS
 .DS_Store
@@ -27,5 +29,20 @@ __pycache__/
 backtest_events.csv  # 33 MB，不要推
 data_output/
 
+# 本機 logs (含 finlab 抓取 log, 監控 .command 輸出)
+logs/
+*.log
+
+# 監控 .command (本機用, 不要推)
+*_monitor.command
+v1_kbar_monitor.command
+
 # 本機 debug
 xie_jinhe_articles/
+
+# 60分K 本地增量 (已改用 finlab tw_price_60min 內建, 不需要本地)
+data/kbars_60min_incremental/
+data/kbars_60min_incremental_wide/
+
+# 個人 launchd 配置
+*.plist.local

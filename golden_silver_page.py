@@ -21,6 +21,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 from finlab import data as _finlab_data
 from golden_silver import (
@@ -139,14 +140,11 @@ def _cached_scan_60min(
     sorted_mv = sorted(mv_top.items(), key=lambda x: x[1], reverse=True)
     stock_ids = [s for s, _ in sorted_mv[:market_cap_top]]
 
-    # 顯示本地增量資料狀態
-    from kbar_fetcher import INCREMENTAL_DIR, has_local_incremental
-    if INCREMENTAL_DIR.exists():
-        local_count = sum(1 for sid in stock_ids if has_local_incremental(sid))
-        st.caption(
-            f"💾 **本地 60分K 增量**: `{INCREMENTAL_DIR}` "
-            f"（{local_count}/{len(stock_ids)} 檔有本地資料, 沒有自動 fallback finlab tw_minute）"
-        )
+    # 顯示 60分K 資料來源 (finlab 內建 tw_price_60min)
+    st.caption(
+        f"📡 **60分K 資料來源**: finlab 內建 `tw_price_60min:*` "
+        f"(5 根/天, 歷史從 2026-01-02 起, 187 個交易日 ≈ 935 根, 配額 ~30MB/次)"
+    )
 
     df = scan_golden_silver_60min(
         stock_ids=stock_ids,
@@ -218,11 +216,11 @@ def render_golden_silver_page():
     # ============ 資料頻率 toggle ============
     freq = st.radio(
         "📊 資料頻率",
-        options=['日K (預設, 4785 交易日)', '60分K (FinLab tw_minute, 30 天)'],
+        options=['日K (預設, 4785 交易日)', '60分K (FinLab tw_price_60min, 從 2026/1/2 起)'],
         index=0,
         key="gs_freq",
         horizontal=True,
-        help="日K = 用 finlab 日頻 (歷史 4785 天); 60分K = 用 finlab tw_minute (30 天 ~ 120 根 60分K, 較敏感)",
+        help="日K = 用 finlab 日頻 (歷史 4785 天); 60分K = 用 finlab 內建 tw_price_60min (5 根/天, 從 2026-01-02 起, 187 個交易日 ≈ 935 根, 配額 ~30MB/次)",
     )
     is_60min = '60分K' in freq
 
@@ -244,6 +242,28 @@ def render_golden_silver_page():
                 key="gs_market",
                 format_func=lambda x: {'sii': '上市 (sii)', 'otc': '上櫃 (otc)'}.get(x, x),
             )
+            if is_60min:
+                st.caption("📐 **金包銀 SOP MA** (60分K 棒數, 對應日K 60/120/240MA 概念)")
+                ma_fast = st.slider(
+                    "快線 (SOP 60)",
+                    min_value=10, max_value=200, value=60, step=1,
+                    key="gs_ma_fast",
+                    help="金包銀 SOP 60 根 (≈ 12 天), 對應日K 60MA",
+                )
+                ma_mid = st.slider(
+                    "中線 (SOP 120)",
+                    min_value=20, max_value=200, value=120, step=1,
+                    key="gs_ma_mid",
+                    help="金包銀 SOP 120 根 (≈ 24 天), 對應日K 120MA",
+                )
+                ma_slow = st.slider(
+                    "慢線 (SOP 240)",
+                    min_value=30, max_value=300, value=240, step=1,
+                    key="gs_ma_slow",
+                    help="金包銀 SOP 240 根 (≈ 48 天), 對應日K 240MA",
+                )
+            else:
+                ma_fast = ma_mid = ma_slow = 60  # 日K 用預設
         with col2:
             if is_60min:
                 tolerance_pct = st.slider(
@@ -295,8 +315,8 @@ def render_golden_silver_page():
         df = _cached_scan_60min(
             market_cap_top=market_cap_top,
             market_filter=tuple(market_filter),
-            ma_fast=60, ma_mid=60, ma_slow=60,
-            vol_fast=24, vol_slow=60, days_back=30,
+            ma_fast=ma_fast, ma_mid=ma_mid, ma_slow=ma_slow,
+            vol_fast=24, vol_slow=60, days_back=200,  # 24/60 根 ≈ 4.8/12 天, 200 天保險 (finlab 從 1/2 起 187 天)
             tolerance_pct=tolerance_pct,
             vol_shrink_ratio=vol_shrink_ratio,
             break_threshold=break_threshold,
@@ -355,6 +375,14 @@ def render_golden_silver_page():
     # y-axis label: 名稱 (stock_id)
     bar_labels = [f"{r['名稱']} ({r['stock_id']})" for _, r in top30.iterrows()]
 
+    # 動態決定 MA 欄位 (日K=60MA/60MA距離%, 60分K=MA{N}/MA{N}距離%)
+    if is_60min:
+        ma_label = f'MA{ma_fast}'
+        dist_label = f'MA{ma_fast}距離%'
+    else:
+        ma_label = '60MA'
+        dist_label = '60MA距離%'
+
     fig_bar = go.Figure()
     fig_bar.add_trace(go.Bar(
         y=bar_labels,
@@ -368,11 +396,11 @@ def render_golden_silver_page():
             '訊號分數: %{x} / 4<br>'
             '訊號: %{customdata[0]}<br>'
             '收盤: %{customdata[1]:.2f}<br>'
-            '60MA: %{customdata[2]:.2f} (%{customdata[3]:+.2f}%)<br>'
+            f'{ma_label}: %{{customdata[2]:.2f}} (%{{customdata[3]:+.2f}}%)<br>'
             '夾擊帶寬度: %{customdata[4]:.2f}%<br>'
             '量縮比: %{customdata[5]:.3f}<extra></extra>'
         ),
-        customdata=top30[['訊號', '收盤', '60MA', '60MA距離%', '夾擊帶寬度%', '量縮比']].values,
+        customdata=top30[['訊號', '收盤', ma_label, dist_label, '夾擊帶寬度%', '量縮比']].values,
     ))
     fig_bar.update_layout(
         height=700,
@@ -387,18 +415,23 @@ def render_golden_silver_page():
     st.divider()
     st.markdown("#### 📋 完整明細表")
     if is_60min:
-        # 60分K 模式: 動態取得 MA 欄位名 (ma_fast/ma_mid/ma_slow)
-        ma_fast_col = f'MA{df.attrs.get("ma_fast", 60)}' if hasattr(df, 'attrs') else 'MA60'
-        ma_mid_col = f'MA{df.attrs.get("ma_mid", 60)}' if hasattr(df, 'attrs') else 'MA60'
-        ma_slow_col = f'MA{df.attrs.get("ma_slow", 60)}' if hasattr(df, 'attrs') else 'MA60'
-        vol_fast_col = next((c for c in df.columns if c.startswith('量MA') and c.endswith('(根)')), '量MA24(根)')
-        vol_slow_col = next((c for c in df.columns if c.startswith('量MA') and c != vol_fast_col), '量MA60(根)')
+        # 60分K 模式: 動態取得 MA 欄位名 (用 page slider 的 ma_fast/ma_mid/ma_slow)
+        ma_fast_col = f'MA{ma_fast}'
+        ma_mid_col = f'MA{ma_mid}'
+        ma_slow_col = f'MA{ma_slow}'
+        # vol 欄位: scan 用 vol_fast=5 / vol_slow=24, 動態找
+        vol_cols = [c for c in df.columns if c.startswith('量MA') and c.endswith('(根)')]
+        vol_fast_col = vol_cols[0] if len(vol_cols) >= 1 else '量MA5(根)'
+        vol_slow_col = vol_cols[1] if len(vol_cols) >= 2 else '量MA24(根)'
         # 取 ma_fast 對應距離欄
-        dist_col = f'MA{ma_fast_col[2:]}距離%'
+        dist_col = f'MA{ma_fast}距離%'
 
         display_df = df_sorted[[
-            'stock_id', '名稱', '市場', '產業', '市值(億)', '資料時間',
-            '收盤', ma_fast_col, ma_mid_col, ma_slow_col, 'upper_ma',
+            'stock_id', '名稱', '市場', '產業',
+            '市值(億)', '當日成交金額(億)', '3日平均成交金額(億)', '資料時間',
+            '收盤', '當日漲跌幅%', '3日累積漲跌幅%',
+            '當日成交張數', '3日平均成交張數',
+            ma_fast_col, ma_mid_col, ma_slow_col, 'upper_ma',
             '夾擊帶寬度%', dist_col, '上蓋距離%',
             vol_fast_col, vol_slow_col, '量縮比',
             f'突破MA{ma_mid_col[2:]}', f'突破MA{ma_slow_col[2:]}', '近5日內突破', '實體長紅',
@@ -408,9 +441,29 @@ def render_golden_silver_page():
             '訊號', '訊號分數',
         ]].copy()
     else:
+        # 日K 模式: 從 finlab 日頻算 當日/3日 成交金額 (億) 加到 df_sorted
+        try:
+            _vol = _finlab_data.get('price:成交股數')
+            _close = _finlab_data.get('price:收盤價')
+            if _vol is not None and _close is not None:
+                _amt_today = (_vol.iloc[-1] * _close.iloc[-1]) / 1e8
+                if len(_vol) >= 3:
+                    _amt_3d = sum((_vol.iloc[-i] * _close.iloc[-i]) for i in range(1, 4)) / 3 / 1e8
+                else:
+                    _amt_3d = _amt_today
+                df_sorted['當日成交金額(億)'] = df_sorted['stock_id'].astype(str).map(_amt_today.to_dict()).fillna(0)
+                df_sorted['3日平均成交金額(億)'] = df_sorted['stock_id'].astype(str).map(_amt_3d.to_dict()).fillna(0)
+            else:
+                df_sorted['當日成交金額(億)'] = 0
+                df_sorted['3日平均成交金額(億)'] = 0
+        except Exception:
+            df_sorted['當日成交金額(億)'] = 0
+            df_sorted['3日平均成交金額(億)'] = 0
         display_df = df_sorted[[
             'stock_id', '名稱', '市場', '產業', '市值(億)',
-            '收盤', '60MA', '120MA', '240MA', 'upper_ma',
+            '當日成交金額(億)', '3日平均成交金額(億)',
+            '收盤', '當日漲跌幅%', '3日累積漲跌幅%',
+            '60MA', '120MA', '240MA', 'upper_ma',
             '夾擊帶寬度%', '60MA距離%', '上蓋距離%',
             '5日均量(張)', '60日均量(張)', '量縮比',
             '突破120MA', '突破240MA', '近5日內突破', '實體長紅',
@@ -420,24 +473,35 @@ def render_golden_silver_page():
             '訊號', '訊號分數',
         ]].copy()
     # 格式化
-    ma_cols = [c for c in display_df.columns if c.startswith('MA') and c != 'MA60距離%' and '(' not in c]
+    # ma_cols 只抓「純 MA 數值」, 排除 MA{N}距離% 跟 量MA{N}(根) 跟 MA60距離%
+    ma_cols = [c for c in display_df.columns
+               if c.startswith('MA') and not c.endswith('距離%') and '(' not in c]
     for col in ma_cols + ['upper_ma']:
         if col in display_df.columns:
             display_df[col] = display_df[col].apply(lambda x: f"{x:,.2f}")
     display_df['收盤'] = display_df['收盤'].apply(lambda x: f"{x:,.2f}")
-    for col in ['夾擊帶寬度%', '60MA距離%', '上蓋距離%']:
-        if col in display_df.columns:
-            display_df[col] = display_df[col].apply(lambda x: f"{x:+.2f}%")
-    # 60分K 模式的 MA 距離欄 (MA60距離% 已處理, MA{N}距離% 也要處理)
+    # 帶 % 欄位 (夾擊帶寬度% / 上蓋距離% / 60MA距離% / MA{N}距離%)
     for col in display_df.columns:
-        if col.startswith('MA') and col.endswith('距離%'):
-            display_df[col] = display_df[col].apply(lambda x: f"{x:+.2f}%")
+        if col in ('夾擊帶寬度%', '上蓋距離%') or col.endswith('距離%'):
+            if col in display_df.columns:
+                display_df[col] = display_df[col].apply(lambda x: f"{x:+.2f}%" if isinstance(x, (int, float)) else x)
     display_df['量縮比'] = display_df['量縮比'].apply(lambda x: f"{x:.3f}")
     for col in ['5日均量(張)', '60日均量(張)']:
         if col in display_df.columns:
             display_df[col] = display_df[col].apply(lambda x: f"{x:,.0f}")
     for col in [c for c in display_df.columns if c.startswith('量MA') and c.endswith('(根)')]:
         display_df[col] = display_df[col].apply(lambda x: f"{x:,.0f}")
+    # 通用: 當日漲跌幅% / 3日累積漲跌幅% (帶正負, 日K 跟 60分K 都有)
+    for col in ['當日漲跌幅%', '3日累積漲跌幅%']:
+        if col in display_df.columns:
+            display_df[col] = display_df[col].apply(lambda x: f"{x:+.2f}%" if isinstance(x, (int, float)) else x)
+    # 通用: 成交金額(億) / 成交張數 (日K 跟 60分K 都有)
+    for col in ['當日成交金額(億)', '3日平均成交金額(億)']:
+        if col in display_df.columns:
+            display_df[col] = display_df[col].apply(lambda x: f"{x:,.2f}" if isinstance(x, (int, float)) else x)
+    for col in ['當日成交張數', '3日平均成交張數']:
+        if col in display_df.columns:
+            display_df[col] = display_df[col].apply(lambda x: f"{x:,.0f}" if isinstance(x, (int, float)) else x)
     for col in ['突破120MA', '突破240MA', '近5日內突破', '實體長紅']:
         if col in display_df.columns:
             display_df[col] = display_df[col].apply(lambda x: '✅' if x else '—')
@@ -465,6 +529,127 @@ def render_golden_silver_page():
         mime="text/csv",
         key="gs_download_csv",
     )
+
+    # ============ 個股量價技術表 ============
+    st.divider()
+    st.markdown("#### 📊 個股量價技術表")
+    st.caption("從 scan 結果選個股或手動輸入代號，顯示 60分K + MA60/120/240 + 成交量")
+
+    col_a, col_b = st.columns([3, 1])
+    with col_a:
+        # dropdown 從 scan 結果前 30 大選
+        top_chart_df = df_sorted.head(30)[['stock_id', '名稱']].copy()
+        if not top_chart_df.empty:
+            top_chart_df['label'] = top_chart_df['名稱'] + ' (' + top_chart_df['stock_id'] + ')'
+            chart_sid = st.selectbox(
+                "📌 從 scan 結果選個股",
+                options=top_chart_df['stock_id'].tolist(),
+                format_func=lambda x: top_chart_df.loc[top_chart_df['stock_id'] == x, 'label'].iloc[0]
+                                   if len(top_chart_df.loc[top_chart_df['stock_id'] == x]) > 0 else x,
+                key="gs_chart_select",
+            )
+        else:
+            chart_sid = None
+            st.info("scan 結果為空，請用右側手動輸入")
+    with col_b:
+        custom_sid = st.text_input(
+            "✏️ 或手動輸入代號",
+            value="",
+            key="gs_chart_custom",
+            placeholder="e.g. 2330",
+        ).strip()
+
+    final_sid = custom_sid or chart_sid
+    if final_sid:
+        from kbar_fetcher import fetch_60min_kbar
+        try:
+            k = fetch_60min_kbar(final_sid, '2026-01-02')
+        except Exception as e:
+            st.error(f"抓 {final_sid} 60分K 失敗: {e}")
+            k = pd.DataFrame()
+
+        if k.empty:
+            st.warning(f"⚠️ 找不到 {final_sid} 60分K 資料（finlab 從 2026-01-02 起, 935 根）")
+        else:
+            # 算 3 條 MA (SOP 60/120/240)
+            ma_fast_s = k['close'].rolling(60, min_periods=30).mean()
+            ma_mid_s = k['close'].rolling(120, min_periods=60).mean()
+            ma_slow_s = k['close'].rolling(240, min_periods=120).mean()
+
+            # 漲跌色 (台股紅漲綠跌)
+            up = k['close'] >= k['open']
+
+            # X 軸用簡潔字串 (MM/DD HH:MM), 避免 datetime 顯示一堆零
+            x_labels = k.index.strftime('%m/%d %H:%M')
+
+            # 畫 K 棒 + MA + 成交量
+            fig = make_subplots(
+                rows=2, cols=1, shared_xaxes=True,
+                row_heights=[0.7, 0.3], vertical_spacing=0.03
+            )
+            fig.add_trace(go.Candlestick(
+                x=x_labels, open=k['open'], high=k['high'], low=k['low'], close=k['close'],
+                increasing_line_color='red', decreasing_line_color='green',
+                name='60分K'
+            ), row=1, col=1)
+            fig.add_trace(go.Scatter(
+                x=x_labels, y=ma_fast_s, mode='lines',
+                line=dict(color='blue', width=1.5), name='MA60 (短線)'
+            ), row=1, col=1)
+            fig.add_trace(go.Scatter(
+                x=x_labels, y=ma_mid_s, mode='lines',
+                line=dict(color='orange', width=1.5), name='MA120 (中線)'
+            ), row=1, col=1)
+            fig.add_trace(go.Scatter(
+                x=x_labels, y=ma_slow_s, mode='lines',
+                line=dict(color='purple', width=1.5), name='MA240 (長線)'
+            ), row=1, col=1)
+            fig.add_trace(go.Bar(
+                x=x_labels, y=k['volume'],
+                marker_color=up.map({True: 'red', False: 'green'}),
+                name='成交量'
+            ), row=2, col=1)
+
+            # type='category' + 字串 x 不會觸發 datetime tickformat
+            fig.update_xaxes(type='category', nticks=12, tickangle=-30)
+            fig.update_yaxes(title_text='價格', row=1, col=1)
+            fig.update_yaxes(title_text='成交量（張）', row=2, col=1)
+            fig.update_layout(
+                title=f'📊 {final_sid} 60分K + MA60/120/240 ({len(k)} 根, 從 {k.index[0].strftime("%Y-%m-%d")} 起)',
+                xaxis_rangeslider_visible=False,
+                showlegend=True,
+                height=700,
+            )
+            st.plotly_chart(fig, width="stretch")
+
+            # 關鍵指標
+            last_close = float(k['close'].iloc[-1])
+            last_ma60 = float(ma_fast_s.iloc[-1]) if not pd.isna(ma_fast_s.iloc[-1]) else 0
+            last_ma120 = float(ma_mid_s.iloc[-1]) if not pd.isna(ma_mid_s.iloc[-1]) else 0
+            last_ma240 = float(ma_slow_s.iloc[-1]) if not pd.isna(ma_slow_s.iloc[-1]) else 0
+            last_vol = float(k['volume'].iloc[-1])
+
+            m1, m2, m3, m4, m5 = st.columns(5)
+            m1.metric("收盤", f"{last_close:,.2f}")
+            m2.metric("MA60 短線", f"{last_ma60:,.2f}",
+                      delta=f"{last_close - last_ma60:+,.2f}" if last_ma60 else None)
+            m3.metric("MA120 中線", f"{last_ma120:,.2f}",
+                      delta=f"{last_close - last_ma120:+,.2f}" if last_ma120 else None)
+            m4.metric("MA240 長線", f"{last_ma240:,.2f}",
+                      delta=f"{last_close - last_ma240:+,.2f}" if last_ma240 else None)
+            m5.metric("成交量（張）", f"{last_vol:,.0f}")
+
+            # 跟 scan 結果對照
+            if not df.empty and 'stock_id' in df.columns:
+                match = df[df['stock_id'] == final_sid]
+                if not match.empty:
+                    r = match.iloc[0]
+                    st.info(
+                        f"📋 **Scan 結果對照** {final_sid} ({r['名稱']}): "
+                        f"訊號 **{r['訊號']}** | 分數 **{r['訊號分數']}/4** | "
+                        f"夾擊帶寬度 **{r['夾擊帶寬度%']:+.2f}%** | "
+                        f"量縮比 **{r['量縮比']:.3f}**"
+                    )
 
     # ============ 公式說明 + 進出場 SOP ============
     with st.expander("📐 公式說明 & 新式形態學 SOP (進出場 + 停損停利)"):

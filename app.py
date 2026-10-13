@@ -205,14 +205,39 @@ def render_treemap_page():
 
     # Top 漲 / Top 跌表
     st.markdown("#### 🏆 排行")
+    # 加 當日/3日 成交金額 (億) — 從 finlab 日頻 price:成交股數 × price:收盤價 算
+    try:
+        from finlab import data as _fd
+        _vol = _fd.get('price:成交股數')
+        _close = _fd.get('price:收盤價')
+        if _vol is not None and _close is not None:
+            _amount_today = (_vol.iloc[-1] * _close.iloc[-1]) / 1e8  # 元 → 億
+            if len(_vol) >= 3:
+                _amount_3d = sum((_vol.iloc[-i] * _close.iloc[-i]) for i in range(1, 4)) / 3 / 1e8
+            else:
+                _amount_3d = _amount_today
+            df['當日成交金額(億)'] = df['stock_id'].map(_amount_today).fillna(0)
+            df['3日平均成交金額(億)'] = df['stock_id'].map(_amount_3d).fillna(0)
+        else:
+            df['當日成交金額(億)'] = 0
+            df['3日平均成交金額(億)'] = 0
+    except Exception:
+        df['當日成交金額(億)'] = 0
+        df['3日平均成交金額(億)'] = 0
+
+    rank_cols = ["stock_id_name", "close", "return_ratio", "market_value", "當日成交金額(億)", "3日平均成交金額(億)"]
     c1, c2 = st.columns(2)
     with c1:
         st.markdown("**漲幅前 20**")
-        top_up = df.nlargest(20, "return_ratio")[["stock_id_name", "close", "return_ratio", "market_value"]]
+        top_up = df.nlargest(20, "return_ratio")[rank_cols].copy()
+        top_up['當日成交金額(億)'] = top_up['當日成交金額(億)'].apply(lambda x: f"{x:,.2f}")
+        top_up['3日平均成交金額(億)'] = top_up['3日平均成交金額(億)'].apply(lambda x: f"{x:,.2f}")
         st.dataframe(top_up, hide_index=True, width="stretch")
     with c2:
         st.markdown("**跌幅前 20**")
-        top_dn = df.nsmallest(20, "return_ratio")[["stock_id_name", "close", "return_ratio", "market_value"]]
+        top_dn = df.nsmallest(20, "return_ratio")[rank_cols].copy()
+        top_dn['當日成交金額(億)'] = top_dn['當日成交金額(億)'].apply(lambda x: f"{x:,.2f}")
+        top_dn['3日平均成交金額(億)'] = top_dn['3日平均成交金額(億)'].apply(lambda x: f"{x:,.2f}")
         st.dataframe(top_dn, hide_index=True, width="stretch")
 
     st.caption(

@@ -1,13 +1,14 @@
 """
-kbar_fetcher.py — 個股 60分K 抓取 (用 finlab tw_minute API)
+kbar_fetcher.py — 個股 60分K 抓取 (用 finlab tw_price_60min 內建)
 
-來源: Finlab CLI 官方提供 `data.get(f'tw_minute:{stock_id}', start=..., end=...)`
-- 1 分 K 資料, 單次最多 31 天 (程式自動分段)
-- resample 60min 聚合成 60分K
-- 全市場有 (1800 檔個股都有, 包含 ETF/權證)
-- @lru_cache + @st.cache_data 避免重抓 (finlab 抓每段 8-40s 很慢)
+來源: Finlab 內建 `data.get('tw_price_60min:{open/high/low/close/volume}')`
+- 全市場 60分K, 5 根/天 (10:00/11:00/12:00/13:00/13:33 收盤)
+- 歷史從 2026-09-01 起 (finlab 2026-10-12 重建後, 5 個 key 都有資料)
+- 抓取超快 2-3 秒 / 全市場 2414 檔
+- 配額 5 個 key × 6MB = 30MB/次, 5GB/day 內 OK
+- @st.cache_data 30 分鐘避免重抓 (配額小但 streamlit 還是會一直 query)
 
-注意: finlab 2.0.20 對 tw_minute 的用量可能會計入 daily quota (5000MB/day)
+注意: finlab 2.2.10 → 2.2.11 升版可消除 "Your version is 2.2.10" 警告 (但不影響功能)
 """
 import pandas as pd
 from typing import Optional
@@ -15,41 +16,35 @@ from functools import lru_cache
 from pathlib import Path
 
 
-@lru_cache(maxsize=128)
-def _fetch_minute_kbar_cached(stock_id: str, start: str, end: str) -> str:
-    """lru_cache 抓 1 分 K, 回傳 JSON 字串"""
-    from finlab import data as _finlab_data
-    chunks = []
-    s = pd.Timestamp(start)
-    end_ts = pd.Timestamp(end)
-    while s <= end_ts:
-        e = min(s + pd.Timedelta(days=30), end_ts)
-        chunks.append(_finlab_data.get(
-            f'tw_minute:{stock_id}',
-            start=s.strftime('%Y-%m-%d'),
-            end=e.strftime('%Y-%m-%d'),
-        ))
-        s = e + pd.Timedelta(days=1)
-    df = pd.concat(chunks, ignore_index=True)
-    return df.to_json(orient='split', date_format='iso')
+# finlab 內建 tw_price_60min:* 5 個 keys 對應欄位
+FIELDS_MAP = {
+    'open': '開盤價',
+    'high': '最高價',
+    'low': '最低價',
+    'close': '收盤價',
+    'volume': '成交量',
+}
+# finlab tw_price_60min 歷史起點 (2026-10-14 重建後從 2026-01-02 起, 187 個交易日)
+MIN_START_DATE = '2026-01-02'
 
 
-def fetch_minute_kbar(stock_id: str, start: str, end: str) -> pd.DataFrame:
+def fetch_60min_kbar(stock_id: str, start: str = MIN_START_DATE, end: Optional[str] = None) -> pd.DataFrame:
     """
-    抓個股 1 分 K 資料 (finlab tw_minute API) — 自動 lru_cache 避免重抓
+    一站式: 從 finlab tw_price_60min:* 拿單檔 60分K (5 個欄位)
 
     Args:
         stock_id: 股票代號 (e.g. '2330')
-        start: 起始日 'YYYY-MM-DD'
-        end: 結束日 'YYYY-MM-DD'
+        start: 起始日 'YYYY-MM-DD' (預設 '2026-09-01')
+        end: 結束日 'YYYY-MM-DD' (預設 None = 抓到最新)
 
     Returns:
-        DataFrame columns: stock_id, trade_date, timestamp, session,
-                           open, high, low, close, volume, tick_count, vwap
+        DataFrame index=DatetimeIndex, columns=[open, high, low, close, volume]
     """
-    import io
-    raw = _fetch_minute_kbar_cached(stock_id, start, end)
-    return pd.read_json(io.StringIO(raw), orient='split')
+    from finlab import data
+    k = pd.DataFrame({col: data.get(f'tw_price_60min:{name}')[stock_id]
+                       for col, name in FIELDS_MAP.items()}).loc[start:end]
+    k = k.dropna(how='all')
+    return k
 
 
 def resample_to_60min(minute_df: pd.DataFrame) -> pd.DataFrame:
@@ -72,33 +67,17 @@ def resample_to_60min(minute_df: pd.DataFrame) -> pd.DataFrame:
                        .dropna(subset=['open']))
 
 
-def fetch_60min_kbar(stock_id: str, start: str, end: str) -> pd.DataFrame:
-    """
-    一站式: 抓 1 分 K + resample 成 60分K (lru_cache)
-
-    Args:
-        stock_id: 股票代號
-        start: 起始日
-        end: 結束日
-
-    Returns:
-        DataFrame 60分K, index=DatetimeIndex
-    """
-    minute_df = fetch_minute_kbar(stock_id, start, end)
-    return resample_to_60min(minute_df)
-
-
 # Streamlit 整合: cache_data 30 分鐘 (額外一層 cache 在 streamlit 內)
 def make_st_cached_fetcher():
     """在 streamlit page 內用 @st.cache_data 包這個"""
     import streamlit as st
 
     @st.cache_data(ttl=1800, show_spinner="抓 60分K 資料...")
-    def _cached(stock_id: str, start: str, end: str) -> str:
+    def _cached(stock_id: str, start: str, end: Optional[str]) -> str:
         df = fetch_60min_kbar(stock_id, start, end)
         return df.to_json(orient='split', date_format='iso')
 
-    def wrapper(stock_id: str, start: str, end: str) -> pd.DataFrame:
+    def wrapper(stock_id: str, start: str = MIN_START_DATE, end: Optional[str] = None) -> pd.DataFrame:
         raw = _cached(stock_id, start, end)
         df = pd.read_json(raw, orient='split')
         if df.empty:
@@ -113,51 +92,34 @@ if __name__ == '__main__':
     # smoke test
     import time
     t0 = time.time()
-    df = fetch_60min_kbar('2330', '2026-10-01', '2026-10-08')
+    df = fetch_60min_kbar('2330', '2026-09-15')
     print(f"2330 60分K (首次): {time.time()-t0:.1f}s, {len(df)} 根")
     t0 = time.time()
-    df2 = fetch_60min_kbar('2330', '2026-10-01', '2026-10-08')
-    print(f"2330 60分K (cache): {time.time()-t0:.3f}s, {len(df2)} 根")
+    df2 = fetch_60min_kbar('2330', '2026-09-15')
+    print(f"2330 60分K (lru_cache): {time.time()-t0:.3f}s, {len(df2)} 根")
     print(f"前 3 筆:\n{df.head(3)}")
+    print(f"後 3 筆:\n{df.tail(3)}")
 
 
 # ============================================================
-# 整合: 優先讀本地增量 (launchd daily_increment 累積的 parquet), fallback finlab
+# 整合: 統一入口給金包銀 page 用 (從 finlab tw_price_60min 拿)
 # ============================================================
-INCREMENTAL_DIR = Path(__file__).resolve().parent / 'data' / 'kbars_60min_incremental'
-
-
-def has_local_incremental(stock_id: str) -> bool:
-    """檢查本地增量資料夾是否有該股 parquet"""
-    if not INCREMENTAL_DIR.exists():
-        return False
-    path = INCREMENTAL_DIR / f'{stock_id}.parquet'
-    return path.exists() and path.stat().st_size > 100
-
-
 def get_stock_60min(stock_id: str, days_back: int = 30) -> tuple[pd.DataFrame, str]:
     """
-    取得個股 60分K 資料 (優先本地增量, fallback finlab tw_minute)
+    取得個股 60分K 資料 (finlab 內建 tw_price_60min)
 
     Args:
         stock_id: 股票代號
-        days_back: 從今天往前抓幾天 (finlab fallback 用)
+        days_back: 從今天往前抓幾天 (預設 30, 但 finlab tw_price_60min 從 2026-09-01 起)
 
     Returns:
-        (df, source) — source 是 'local_incremental' 或 'finlab_live'
+        (df, source) — source 是 'finlab_60min_builtin'
     """
-    # 1. 試本地增量
-    if has_local_incremental(stock_id):
-        try:
-            df = pd.read_parquet(INCREMENTAL_DIR / f'{stock_id}.parquet')
-            if not df.empty:
-                return df, 'local_incremental'
-        except Exception:
-            pass
-
-    # 2. fallback finlab
     from datetime import datetime, timedelta
-    end = datetime.now().strftime('%Y-%m-%d')
-    start = (datetime.now() - timedelta(days=days_back + 5)).strftime('%Y-%m-%d')
-    df = fetch_60min_kbar(stock_id, start, end)
-    return df, 'finlab_live'
+    end_date = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')  # 避免 finlab not_ready
+    start_date = (datetime.now() - timedelta(days=days_back + 5)).strftime('%Y-%m-%d')
+    # finlab tw_price_60min 歷史從 2026-09-01 起, 不能給太早
+    start_date = max(start_date, MIN_START_DATE)
+
+    df = fetch_60min_kbar(stock_id, start_date, end_date)
+    return df, 'finlab_60min_builtin'

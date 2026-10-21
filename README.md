@@ -1,6 +1,6 @@
 # 台股分析平台 (MA_Indicator) 📊
 
-個人用的台股量化分析平台，**Streamlit + FinLab**，**11 個頁面**。
+個人用的台股量化分析平台，**Streamlit + FinLab**，**12 個頁面**。
 
 V2 (備份用) 在 [MA_Indicator_V2](../MA_Indicator_V2) 子資料夾（5 個核心 page 簡化版）。
 
@@ -34,7 +34,7 @@ streamlit run app.py --server.port 8765 --server.headless true
 
 ---
 
-## 📑 11 個 Pages (sidebar radio)
+## 📑 12 個 Pages (sidebar radio)
 
 ### 1. 📈 **均線預測** — 個股 K 線 + 5/10/20/60 MA
 - 預測下個交易日收盤後均線
@@ -85,9 +85,35 @@ streamlit run app.py --server.port 8765 --server.headless true
 - 完整明細表: 收盤 + 當日/3日 漲跌% + 當日/3日 金額(億) + 張數 + MA + 夾擊帶寬度 + 突破 + 三大法人
 - **📊 個股量價技術表**: 從 scan 結果或手動輸入個股代號，顯示 60分K K棒 + MA + 成交量 (5 個關鍵指標 + scan 結果對照)
 
-### 11. 🔄 **資料更新**
-- 手動按鈕 + launchd 21:20 自動排程 (Finlab 日頻 + 60分K)
+### 11. 😱 **恐懼貪婪指數 Dashboard** (美/台/日/韓對照)
+- **FGI 時間軸**: 四國折線對照 + 恐慌/中立/貪婪背景色帶 + 中線 50 + 末端標籤
+- **美國 FGI**: CNN 官方 API (`production.dataviz.cnn.io/index/fearandgreed/graphdata`)，含 9 個官方組件
+  - 動能 / 動能125 / 強度 / 廣度 / PutCall / 波動 / 波動50 / 垃圾債 / 避險
+- **台/日/韓 FGI**: 自算（CNN 同架構 5 組件等權重，各 20%）
+  - 動能 (20日報酬 120日百分位) / 強度 (收盤 vs MA50) / 趨勢 (MA20 vs MA60)
+  - 波動 (20日實現波動, 反向) / 量能 (20日均量 / 60日均量)
+- **四大指數水位**: S&P500 `^GSPC` / 加權 `^TWII` / 日經225 `^N225` / KOSPI `^KS11` + VIX `^VIX` (FinLab `world_index:close`)
+- **資料範圍**: 2026-01-02 起（指數計算實際從 2024-12-01 暖機，確保 1/2 就有值）
+- **組件分解**: 單一市場組件長條圖 + 組件歷史走勢
+- **四大指數相對報酬**: 區間起點 = 100 的歸一化對比
+- **歷史明細表**: 可下載 CSV
+
+⚠️ 美國用官方值、台日韓用自算值，**口徑不同**，適合看趨勢方向與相對冷熱，不宜直接做絕對值比較。
+
+### 12. 🔄 **資料更新**
+- 手動按鈕 + launchd **20:20** 自動排程（工作日週一至週五）
+- 三個步驟依序跑：
+  1. `data_update.py --force` — finlab 日頻資料
+  2. `etf_history_storage.save_today_snapshot()` — etfinfo 主動 ETF 每日 snapshot
+  3. `fear_greed_fetcher.py` — **Fear & Greed Index**（CNN 官方 US + 自算 TW/JP/KR）
+- FGI 失敗只 warn 不影響主流程（CNN 偶爾 418、finlab quota 用完都不該讓排程整個掛掉）
 - finlab OAuth/cert 認證統一從 `finlab_config.login_finlab()`
+- Streamlit 端保險：parquet 超過 30 小時未更新就現場重抓
+
+**手動執行**：
+```bash
+/opt/anaconda3/envs/finlab3/bin/python fear_greed_fetcher.py
+```
 
 ---
 
@@ -116,9 +142,11 @@ streamlit run app.py --server.port 8765 --server.headless true
 
 ```
 MA_Indicator/
-├── app.py                          # Streamlit 主入口 (含 11 個 page 路由)
+├── app.py                          # Streamlit 主入口 (含 12 個 page 路由)
 ├── golden_silver.py                # 金包銀型態演算法 (日K + 60分K scan)
 ├── golden_silver_page.py           # 金包銀 page UI (含個股量價技術表)
+├── fear_greed_fetcher.py          # FGI 抓取+計算 (CNN 官方 US + 自算 TW/JP/KR)
+├── fear_greed_page.py             # 恐懼貪婪 Dashboard UI (12 個 page)
 ├── kbar_fetcher.py                 # 60分K 抓取 (用 finlab 內建 tw_price_60min)
 ├── big_player.py / big_player_page.py
 ├── ma_engine.py / ma_recovery_scanner.py

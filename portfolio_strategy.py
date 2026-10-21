@@ -82,7 +82,7 @@ def load_features():
 
     # 技術指標
     rsi20 = data.indicator("RSI", timeperiod=20)
-    k, d = data.indicator('STOCH', resample='D', timeperiod=14, fastk_period=9, slowk_period=3, slowd_period=3)
+    k, d = data.indicator('STOCH', resample='D', fastk_period=9, slowk_period=3, slowk_matype=0, slowd_period=3, slowd_matype=0)
     atr = data.indicator('ATR', adjust_price=True, timeperiod=10)
     adj_close = data.get('etl:adj_close').index_str_to_date().fillna(0)
     entry_volatility = atr / adj_close

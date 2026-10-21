@@ -46,3 +46,13 @@ data/kbars_60min_incremental_wide/
 
 # 個人 launchd 配置
 *.plist.local
+
+# 備份檔
+*.bak
+*.bak.*
+
+# FGI 每日累積資料（parquet 由排程產生，不進版控）
+data/fear_greed/
+
+# 其他本機資料快取
+*.parquet

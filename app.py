@@ -33,7 +33,7 @@ from ma_engine import (
     build_chart_data,
     find_break_even_close,
 )
-from data_fetcher import fetch_ohlcv, get_stock_name, get_all_securities, ensure_finlab_login
+from data_fetcher import fetch_ohlcv, get_stock_name, get_all_securities, ensure_finlab_login, HK_STOCK_NAMES
 from treemap_page import (
     plot_treemap,
     render_summary_stats,
@@ -91,6 +91,31 @@ try:
 except Exception as _e:
     st.error(f"finlab login 失敗：`{_e}`")
 
+# ============================================================
+# 強迫更新: 每次打開專案檢查 last refresh, 超過 4 小時就清 streamlit cache + 觸發 finlab warm-up
+# 配合 launchd 20:00 排程跑 daily_data_update.sh
+# ============================================================
+def _force_refresh_if_stale():
+    import time as _t
+    status_path = Path.home() / ".openclaw" / "data_update_status.json"
+    if not status_path.exists():
+        return  # 沒更新過, 不清 cache (避免每次打開都重抓)
+    age_hours = (_t.time() - status_path.stat().st_mtime) / 3600
+    if age_hours > 4:
+        st.cache_data.clear()
+        # 觸發 finlab 抓 5 個最常用 keys, 確保 cache 是新的
+        try:
+            from finlab import data as _fd
+            _fd.get('price:收盤價')
+            _fd.get('tw_price_60min:收盤價')
+            _fd.get('etl:market_value')
+            _fd.get('institutional_investors_trading_summary:外陸資買賣超股數(不含外資自營商)')
+            _fd.get('foreign_investors_shareholding:全體外資及陸資持股比率')
+        except Exception:
+            pass
+
+_force_refresh_if_stale()
+
 st.title("📈 台股分析平台")
 st.caption("用 FinLab 抓台股資料做均線預測 + 市值漲跌幅地圖分析。")
 
@@ -101,7 +126,7 @@ with st.sidebar:
     st.header("📑 頁面")
     page = st.radio(
         "選擇功能",
-        ["📈 均線預測", "🗺️ 市值漲跌地圖", "📊 主動 ETF 持股", "📊 被動 ETF 追蹤", "🔍 均線收復", "🧪 跌破站回回測", "💰 融資維持率", "🧬 基因策略組合", "💹 主力訊號", "📐 金包銀掃描", "🔄 資料更新"],
+        ["📈 均線預測", "🗺️ 市值漲跌地圖", "📊 主動 ETF 持股", "📊 被動 ETF 追蹤", "🔍 均線收復", "🧪 跌破站回回測", "💰 融資維持率", "🧬 基因策略組合", "💹 主力訊號", "📐 金包銀掃描", "😱 恐懼貪婪指數", "🔄 資料更新"],
         label_visibility="collapsed",
         key="page_selector",
     )
@@ -632,6 +657,15 @@ if page == "📐 金包銀掃描":
 
 
 # ============================================================
+# 恐懼貪婪指數 Dashboard (第 11 個 page)
+# ============================================================
+if page == "😱 恐懼貪婪指數":
+    from fear_greed_page import render_fear_greed_page
+    render_fear_greed_page()
+    st.stop()
+
+
+# ============================================================
 # 資料更新頁面
 # ============================================================
 def render_data_update_page():
@@ -873,6 +907,29 @@ with st.sidebar:
         "0056 元大高股息": "0056",
     }
 
+    POPULAR_HK = {
+        "騰訊 0700.HK": "0700.HK",
+        "阿里巴巴 9988.HK": "9988.HK",
+        "美團 3690.HK": "3690.HK",
+        "小米 1810.HK": "1810.HK",
+        "港交所 0388.HK": "0388.HK",
+        "比亞迪 1211.HK": "1211.HK",
+        "京東 9618.HK": "9618.HK",
+        "中移動 0941.HK": "0941.HK",
+    }
+
+    # 市場切換 (台股 / 港股)
+    market = st.radio(
+        "🌏 市場",
+        options=["🇹🇼 台股", "🇭🇰 港股"],
+        index=0,
+        key="ma_market",
+        horizontal=True,
+        help="切換市場。港股用 finlab `hk_price:*` keys (2846 個交易日, 2976 檔, 從 2016 年起)",
+    )
+    is_hk = "港股" in market
+    current_popular = POPULAR_HK if is_hk else POPULAR
+
     # 載入全市場清單（cache）
     try:
         with st.spinner("載入全市場清單…"):
@@ -909,8 +966,8 @@ with st.sidebar:
     stock_id = st.session_state["stock_id"]
 
     with tab_hot:
-        popular_keys = list(POPULAR.keys())
-        popular_vals = list(POPULAR.values())
+        popular_keys = list(current_popular.keys())
+        popular_vals = list(current_popular.values())
         try:
             cur_idx = popular_vals.index(stock_id)
         except ValueError:
@@ -968,26 +1025,45 @@ with st.sidebar:
     with tab_all:
         # 1) 關鍵字搜尋
         #    bind="query-params" 讓 Enter 後 streamlit 強制把 value 寫進 URL
+        placeholder = "例如 7709 / 0700.HK / 騰訊" if is_hk else "例如 3037 / 欣興 / 0050"
         st.text_input(
             "搜尋（代號或中文）",
-            placeholder="例如 3037 / 欣興 / 0050",
+            placeholder=placeholder,
             key="all_search",
             label_visibility="collapsed",
             bind="query-params",
         )
         search = st.session_state.get("all_search", "").strip().lower()
 
-        # 2) 市場類型過濾
-        market_filter = st.multiselect(
-            "市場",
-            options=sorted(securities["market"].unique()),
-            default=["sii", "otc", "etf"],
-            key="all_markets",
-            label_visibility="collapsed",
-        )
-
-        # 3) 套用過濾
-        df_filtered = securities[securities["market"].isin(market_filter)].copy()
+        # 港股模式: union hk_fund_price (150 檔 ETF/槓桿/反向) + hk_price (2976 檔普通港股) = ~3126 檔
+        #    必須 data.set_market('hk') + reset_universe() 才能載到 hk_fund_price
+        if is_hk:
+            try:
+                from finlab import data as _fd
+                _fd.set_market('hk')
+                _fd.reset_universe()
+                fund_cols = set(_fd.get("hk_fund_price:adj_close").columns)
+                price_cols = set(_fd.get("hk_price:adj_close").columns)
+                hk_close_cols = sorted(fund_cols | price_cols)  # union + 去重 + 排序
+                df_filtered = pd.DataFrame({
+                    "stock_id": hk_close_cols,
+                    "name": [HK_STOCK_NAMES.get(c, "") for c in hk_close_cols],
+                    "market": "hk",
+                })
+            except Exception as e:
+                st.error(f"載入港股清單失敗：`{e}`")
+                df_filtered = pd.DataFrame(columns=["stock_id", "name", "market"])
+        else:
+            # 2) 市場類型過濾
+            market_filter = st.multiselect(
+                "市場",
+                options=sorted(securities["market"].unique()),
+                default=["sii", "otc", "etf"],
+                key="all_markets",
+                label_visibility="collapsed",
+            )
+            # 3) 套用過濾
+            df_filtered = securities[securities["market"].isin(market_filter)].copy()
 
         if search:
             mask = (
@@ -1018,19 +1094,39 @@ with st.sidebar:
                 auto_id = str(df_filtered.iloc[0]["stock_id"])
                 st.session_state["stock_id"] = auto_id
 
-        # 4) 顯示成 label: "2330 台積電 [sii]"
-        #    注意：security_categories 的 stock_id 已經是純數字
-        df_filtered["label"] = (
-            df_filtered["stock_id"].astype(str)
-            + "  "
-            + df_filtered["name"].astype(str)
-            + "  ["
-            + df_filtered["market"].astype(str)
-            + "]"
+        # 4) 顯示成 label: "2330 台積電 [sii]" (name 為空就只顯示代號, 避免 "7709.HK  [hk]" 看起來空)
+        df_filtered["label"] = df_filtered.apply(
+            lambda r: (
+                f"{r['stock_id']}  {r['name']}  [{r['market']}]"
+                if str(r["name"]).strip()
+                else f"{r['stock_id']}  [{r['market']}]"
+            ),
+            axis=1,
         )
 
         if len(df_filtered) == 0:
-            st.warning("找不到符合的股票")
+            st.warning(f"在 {len(hk_close_cols) if is_hk else len(securities)} 檔清單中找不到符合 `{search}` 的股票")
+            # Fallback: 港股模式讓 user 直接手動輸入代號（繞過搜尋過濾）
+            if is_hk:
+                st.caption("如果是 7709.HK 等槓桿/反向 ETF，可以直接用下方按鈕強查：")
+                fb = st.text_input(
+                    "直接輸入港股代號（跳過搜尋）",
+                    key="hk_direct_fallback",
+                    placeholder="例如 7709 / 7709.HK / 0700",
+                    label_visibility="collapsed",
+                )
+                fb_clean = fb.strip().upper()
+                if fb_clean:
+                    # 補 .HK 後綴
+                    if not fb_clean.endswith(".HK"):
+                        fb_clean = fb_clean + ".HK"
+                    if fb_clean in hk_close_cols:
+                        if st.button(f"✅ 強制查詢 {fb_clean}", key="hk_fb_btn"):
+                            st.session_state["stock_id"] = fb_clean
+                            st.session_state["all_search"] = ""  # 清掉舊搜尋
+                            st.rerun()
+                    else:
+                        st.caption(f"❌ `{fb_clean}` 不在 finlab hk_price 2976 檔清單內")
         else:
             # 顯示 label，但 stock_id 從原 df 取
             df_show = df_filtered.head(200).copy()
@@ -1167,9 +1263,18 @@ with st.sidebar:
 # ============================================================
 # 主畫面
 # ============================================================
-@st.cache_data(ttl=3600, show_spinner="FinLab 抓資料中…")
+# TTL 縮短到 5 分鐘 (港股新掛牌資料常被 finlab 補, 短 TTL 確保拿到最新)
+@st.cache_data(ttl=300, show_spinner="FinLab 抓資料中…")
 def _load(stock_id: str, days: int) -> pd.DataFrame:
     return fetch_ohlcv(stock_id, days=days + 60)  # 多抓 60 天給 MA60
+
+
+# 手動強制清 cache 按鈕 (港股新掛牌常被 finlab 補, 讓 user 一鍵重抓)
+with st.sidebar:
+    if st.button("🔄 強制重新抓資料 (清 streamlit cache)", width="stretch"):
+        st.cache_data.clear()
+        st.success("✅ streamlit cache 已清, 重新整理頁面")
+        st.rerun()
 
 
 # --- 重新讀取最新 stock_id（sidebar 內 tab_all 可能已更新）---
@@ -1187,6 +1292,14 @@ try:
     with st.spinner(f"載入 {stock_id} 資料中…（{kline_period}）"):
         df_daily = _load(stock_id, fetch_days)
     name = get_stock_name(stock_id)
+    # 港股如果只回 1 筆, 提示用戶按 R 重整理 (streamlit subprocess 可能跑舊版 fetch_ohlcv)
+    if is_hk and len(df_daily) <= 1:
+        st.error(
+            f"❌ {stock_id} 只抓到 {len(df_daily)} 筆，但 finlab 對 7709.HK 等港股 ETF/槓桿/反向有 230 筆完整歷史。"
+            f"\n\n**這是 streamlit subprocess 還在跑舊版 code**——請按 **R** 鍵（或重整理頁面）強制 reload。"
+            f"\n\n或點 sidebar 的「🔄 強制重新抓資料」按鈕清 streamlit cache。"
+        )
+        st.stop()
 except Exception as e:
     st.error(f"抓資料失敗：`{e}`")
     st.stop()
@@ -1209,6 +1322,16 @@ else:
 close = df_view["close"]
 last_date = df_view.index[-1]
 last_close = float(close.iloc[-1])
+
+# 港股資料不足時提早警告 (finlab 對部分新掛牌 7xxx 槓桿/反向 ETF 還沒收錄, MA 算不出來)
+if len(df_view) < 60:
+    st.warning(
+        f"⚠️ finlab 對 `{stock_id}` 只有 {len(df_view)} 筆歷史資料，"
+        f"MA60 算不出來 (需要 60 筆)。常見原因: 港股新掛牌的 7xxx 槓桿/反向/個股 ETF，"
+        f"finlab 還沒收錄 (例如 7747.HK 三星電子槓桿, 2026-10-17 客服回覆尚未收錄)。"
+        f"\n\n**港股查 7709.HK 等槓桿/反向**：已改用 `hk_fund_price:*` (150 檔 ETF/槓桿/反向/個股 ETF universe)，"
+        f"對 7709.HK 南方東英海力士正2 有 230 筆從 2025-11-10 起的完整歷史。"
+    )
 
 # ============================================================
 # Section 1: 現況概覽

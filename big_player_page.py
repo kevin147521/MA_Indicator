@@ -726,6 +726,32 @@ def _scan_main_force(market_cap_top: int = 300,
         0
     ).round(2)
 
+    # === 外資持股比率增減佔比 (從 foreign_investors_shareholding:全體外資及陸資持股比率 算) ===
+    # 1/5/10/20 個交易日前的外資持股 % 差, 代表「最近 N 天外資加減碼該股的力度」
+    try:
+        fh = _finlab_data.get('foreign_investors_shareholding:全體外資及陸資持股比率')
+        fh_today = fh.iloc[-1]
+        fh_1d_ago = fh.iloc[-2] if len(fh) >= 2 else fh_today
+        fh_5d_ago = fh.iloc[-6] if len(fh) >= 6 else fh_today
+        fh_10d_ago = fh.iloc[-11] if len(fh) >= 11 else fh_today
+        fh_20d_ago = fh.iloc[-21] if len(fh) >= 21 else fh_today
+        for c in [fh_1d_ago, fh_5d_ago, fh_10d_ago, fh_20d_ago]:
+            c.index = c.index.astype(str)
+        fh_today_str = fh_today.copy()
+        fh_today_str.index = fh_today_str.index.astype(str)
+        df['個股_外資增減佔比_當天'] = (fh_today_str - fh_1d_ago).reindex(df['stock_id'].astype(str)).values
+        df['個股_外資增減佔比_5天'] = (fh_today_str - fh_5d_ago).reindex(df['stock_id'].astype(str)).values
+        df['個股_外資增減佔比_10天'] = (fh_today_str - fh_10d_ago).reindex(df['stock_id'].astype(str)).values
+        df['個股_外資增減佔比_20天'] = (fh_today_str - fh_20d_ago).reindex(df['stock_id'].astype(str)).values
+        # 個股_外資持股比例_當天 (今天的外資持股 %, 對齊 scan 結果)
+        df['個股_外資持股比例_當天'] = fh_today_str.reindex(df['stock_id'].astype(str)).values
+        for c in ['個股_外資增減佔比_當天', '個股_外資增減佔比_5天', '個股_外資增減佔比_10天', '個股_外資增減佔比_20天']:
+            df[c] = df[c].fillna(0).round(2)
+        df['個股_外資持股比例_當天'] = df['個股_外資持股比例_當天'].fillna(0).round(2)
+    except Exception:
+        for c in ['個股_外資增減佔比_當天', '個股_外資增減佔比_5天', '個股_外資增減佔比_10天', '個股_外資增減佔比_20天', '個股_外資持股比例_當天']:
+            df[c] = 0.0
+
     # === 成交量增幅 (5 種) ===
     vol_prev1d_map = (df['stock_id'].map(vol_prev1d).fillna(0) / 1000).round(0)
     vol_prev3d_map = (df['stock_id'].map(vol_prev3d).fillna(0) / 1000).round(0)
@@ -1049,6 +1075,33 @@ def _scan_institutional(market_cap_top: int = 300,
 
     # 預設排序：三大法人力道% 當天降冪
     df = df.sort_values('三大法人力道%', ascending=False).reset_index(drop=True)
+
+    # === 外資持股比率增減佔比 + 持股比例 (從 foreign_investors_shareholding:全體外資及陸資持股比率 算) ===
+    # 1/5/10/20 個交易日前的外資持股 % 差, 代表「最近 N 天外資加減碼該股的力度」
+    try:
+        fh = _finlab_data.get('foreign_investors_shareholding:全體外資及陸資持股比率')
+        fh_today = fh.iloc[-1]
+        fh_1d_ago = fh.iloc[-2] if len(fh) >= 2 else fh_today
+        fh_5d_ago = fh.iloc[-6] if len(fh) >= 6 else fh_today
+        fh_10d_ago = fh.iloc[-11] if len(fh) >= 11 else fh_today
+        fh_20d_ago = fh.iloc[-21] if len(fh) >= 21 else fh_today
+        for c in [fh_1d_ago, fh_5d_ago, fh_10d_ago, fh_20d_ago]:
+            c.index = c.index.astype(str)
+        fh_today_str = fh_today.copy()
+        fh_today_str.index = fh_today_str.index.astype(str)
+        df['個股_外資增減佔比_當天'] = (fh_today_str - fh_1d_ago).reindex(df['stock_id'].astype(str)).values
+        df['個股_外資增減佔比_5天'] = (fh_today_str - fh_5d_ago).reindex(df['stock_id'].astype(str)).values
+        df['個股_外資增減佔比_10天'] = (fh_today_str - fh_10d_ago).reindex(df['stock_id'].astype(str)).values
+        df['個股_外資增減佔比_20天'] = (fh_today_str - fh_20d_ago).reindex(df['stock_id'].astype(str)).values
+        # 個股_外資持股比例_當天 (今天的外資持股 %)
+        df['個股_外資持股比例_當天'] = fh_today_str.reindex(df['stock_id'].astype(str)).values
+        for c in ['個股_外資增減佔比_當天', '個股_外資增減佔比_5天', '個股_外資增減佔比_10天', '個股_外資增減佔比_20天']:
+            df[c] = df[c].fillna(0).round(2)
+        df['個股_外資持股比例_當天'] = df['個股_外資持股比例_當天'].fillna(0).round(2)
+    except Exception:
+        for c in ['個股_外資增減佔比_當天', '個股_外資增減佔比_5天', '個股_外資增減佔比_10天', '個股_外資增減佔比_20天', '個股_外資持股比例_當天']:
+            df[c] = 0.0
+
     df.attrs['scan_date'] = last_date.strftime('%Y-%m-%d')
     df.attrs['n_total_top'] = market_cap_top
     df.attrs['filter_summary'] = {
@@ -1675,7 +1728,10 @@ def _render_margin_scan():
                       '成交量(張)', '成交量單日增%', '成交量較3日前增%', '成交量較5日前增%',
                       '主力力道%',
                       '融資力3日累計(張)', '成交量3日(張)', '成交量3日累計增%', '主力力道3日%',
-                      '融資力5日累計(張)', '成交量5日(張)', '成交量5日累計增%', '主力力道5日%']].copy()
+                      '融資力5日累計(張)', '成交量5日(張)', '成交量5日累計增%', '主力力道5日%',
+                      '個股_外資持股比例_當天',
+                      '個股_外資增減佔比_當天', '個股_外資增減佔比_5天',
+                      '個股_外資增減佔比_10天', '個股_外資增減佔比_20天']].copy()
     # 格式化
     for col in ['融資買進(張)', '融資賣出(張)', '成交量(張)', '成交量3日(張)', '成交量5日(張)']:
         display_df[col] = display_df[col].apply(lambda x: f"{int(x):,}")
@@ -1685,6 +1741,11 @@ def _render_margin_scan():
                 '成交量單日增%', '成交量3日累計增%', '成交量5日累計增%',
                 '成交量較3日前增%', '成交量較5日前增%', '漲跌幅%']:
         display_df[col] = display_df[col].apply(lambda x: f"{x:+.2f}%")
+    # 外資持股比例 + 增減佔比 (5 個, 帶正負 .2f% — 值很小)
+    display_df['個股_外資持股比例_當天'] = display_df['個股_外資持股比例_當天'].apply(lambda x: f"{x:.2f}%" if isinstance(x, (int, float)) else x)
+    for col in ['個股_外資增減佔比_當天', '個股_外資增減佔比_5天',
+                '個股_外資增減佔比_10天', '個股_外資增減佔比_20天']:
+        display_df[col] = display_df[col].apply(lambda x: f"{x:+.2f}%" if isinstance(x, (int, float)) else x)
     display_df['收盤價'] = display_df['收盤價'].apply(lambda x: f"{x:,.2f}")
     st.dataframe(display_df, hide_index=True, width="stretch", height=600)
 
@@ -1982,6 +2043,9 @@ def _render_institutional_scan():
         '外資買賣超(張)', '投信買賣超(張)', '自營商買賣超(張)', '三大法人合計(張)',
         '成交量(張)', '成交量單日增%', '成交量較3日前增%', '成交量較5日前增%',
         '外資力道%', '投信力道%', '自營商力道%', '三大法人力道%',
+        '個股_外資持股比例_當天',
+        '個股_外資增減佔比_當天', '個股_外資增減佔比_5天',
+        '個股_外資增減佔比_10天', '個股_外資增減佔比_20天',
         '外資3日累計(張)', '投信3日累計(張)', '自營商3日累計(張)', '三大法人合計3日(張)',
         '成交量3日(張)', '成交量3日累計增%',
         '外資力道3日%', '投信力道3日%', '自營商力道3日%', '三大法人力道3日%',
@@ -2000,6 +2064,17 @@ def _render_institutional_scan():
         display_df['平均成交金額(5日)(億)'] = display_df['平均成交金額(5日)(億)'].apply(lambda x: f"{x:.2f}")
     if '當日成交金額(億)' in display_df.columns:
         display_df['當日成交金額(億)'] = display_df['當日成交金額(億)'].apply(lambda x: f"{x:.2f}")
+    # 外資持股比例 + 增減佔比 (5 個, 帶正負 .2f% — 值很小)
+    if '個股_外資持股比例_當天' in display_df.columns:
+        display_df['個股_外資持股比例_當天'] = display_df['個股_外資持股比例_當天'].apply(
+            lambda x: f"{x:.2f}%" if isinstance(x, (int, float)) else x
+        )
+    for col in ['個股_外資增減佔比_當天', '個股_外資增減佔比_5天',
+                '個股_外資增減佔比_10天', '個股_外資增減佔比_20天']:
+        if col in display_df.columns:
+            display_df[col] = display_df[col].apply(
+                lambda x: f"{x:+.2f}%" if isinstance(x, (int, float)) else x
+            )
     if '當日vs5日量增%' in display_df.columns:
         display_df['當日vs5日量增%'] = display_df['當日vs5日量增%'].apply(lambda x: f"{x:+.2f}%")
     # 5 種成交量增幅欄位名稱（明確白名單，避免跟「當日vs5日量增%」已格式化字串重複 format）

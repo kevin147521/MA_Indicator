@@ -9,10 +9,12 @@ __pycache__/
 .mypy_cache/
 
 # Streamlit
+# ⚠️ secrets.toml 絕對不能推（裡面有 FinLab 憑證）
 .streamlit/secrets.toml
 .streamlit/credentials.toml
 .holders-streamlit-*.log
-.streamlit/
+# 但 config.toml 要推（雲端部署需要）
+!.streamlit/config.toml
 
 # macOS
 .DS_Store

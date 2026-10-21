@@ -84,77 +84,85 @@ import pandas as pd
 from typing import Optional
 
 
+def _finlab_env_creds() -> Optional[dict]:
+    """
+    取得 FinLab 三憑證 (REFRESH_TOKEN / SESSION_ID / API_KEY)。
+
+    優先順序：
+        1. Streamlit Cloud secrets
+        2. 環境變數
+        3. None（本機走 credentials.json / 互動登入）
+
+    FinLab 2.2.13+ 已棄用舊版 api_token，改用瀏覽器 OAuth。
+    官方文件：無瀏覽器環境（伺服器、排程）請執行
+    `python -m finlab token --env` 產生這三個變數。
+    """
+    keys = ("FINLAB_REFRESH_TOKEN", "FINLAB_SESSION_ID", "FINLAB_API_KEY")
+
+    # 1. Streamlit Cloud secrets
+    try:
+        import streamlit as st
+        vals = {}
+        for k in keys:
+            v = st.secrets.get(k, None)
+            if v:
+                vals[k] = str(v)
+        if len(vals) == 3:
+            return vals
+    except Exception:
+        pass
+
+    # 2. 環境變數
+    vals = {}
+    for k in keys:
+        v = os.environ.get(k)
+        if v:
+            vals[k] = v
+    if len(vals) == 3:
+        return vals
+
+    return None
+
+
 def ensure_finlab_login():
     """
     統一 finlab login 入口（所有 page 都呼叫這個）。
 
-    順序（雲端/本地都通用）：
-        1. finlab_config 模組（自定，本地常用）
-        2. st.secrets["FINLAB_API_TOKEN"]（Streamlit Cloud 設定）
-        3. os.environ["FINLAB_API_TOKEN"]（環境變數）
-        4. ~/.finlab/credentials.json（finlab 2.x 自動寫，自動讀）
-        5. finlab.login() 互動登入（fallback）
+    FinLab 2.2.13+ 認證順序：
+        1. 三憑證（st.secrets 或環境變數）— 雲端/排程用
+        2. ~/.finlab/credentials.json — 本機 OAuth 登入後自動產生
+        3. finlab.login() 互動登入 — 首次本機使用
     """
     import finlab
 
-    # 1. finlab_config 模組
-    try:
-        from finlab_config import login_finlab
-        login_finlab()
-        return
-    except ImportError:
-        pass
+    # 1. 三憑證（雲端部署）
+    creds = _finlab_env_creds()
+    if creds:
+        os.environ.update(creds)
+        return  # finlab 會自動讀環境變數
 
-    # 2. Streamlit Cloud secrets
-    try:
-        import streamlit as st
-        if "FINLAB_API_TOKEN" in st.secrets:
-            finlab.login(api_token=st.secrets["FINLAB_API_TOKEN"])
-            return
-    except Exception:
-        pass
-
-    # 3. 環境變數
-    token = os.environ.get("FINLAB_API_TOKEN")
-    if token:
-        finlab.login(api_token=token)
-        return
-
-    # 4. credentials.json（finlab 2.x 自動讀）
+    # 2. credentials.json（finlab 2.x 自動讀）
     cred_path = Path.home() / ".finlab" / "credentials.json"
     if cred_path.exists():
-        # finlab 2.x 自動讀這個檔
         return
 
-    # 5. 互動登入
+    # 3. 互動登入
     try:
         finlab.login()
     except Exception as e:
         raise RuntimeError(
-            "找不到任何 finlab login 方式（finlab_config / "
-            "st.secrets / FINLAB_API_TOKEN / ~/.finlab/credentials.json）："
-            f"{e}"
+            "FinLab 登入失敗。請確認以下其中一種方式：\n"
+            "  1. 本機：執行 python -m finlab token --env 產生憑證，"
+            "或執行 python -c 'import finlab; finlab.login()' 瀏覽器登入\n"
+            "  2. Streamlit Cloud：在 Settings → Secrets 設定 "
+            "FINLAB_REFRESH_TOKEN / FINLAB_SESSION_ID / FINLAB_API_KEY\n"
+            f"\n原始錯誤：{e}"
         )
 
 
-# === FinLab login（沿用統一入口） ===
+# === 舊版相容入口（有些模組 import 這個） ===
 def _ensure_login():
-    try:
-        from finlab_config import login_finlab
-        login_finlab()
-    except ImportError:
-        # 沒有 finlab_config 就自己走硬編碼 / 環境變數
-        import os
-        import finlab
-        token = os.environ.get("FINLAB_API_TOKEN")
-        if token:
-            finlab.login(api_token=token)
-        else:
-            # 沒 token 就 raise 給上層
-            raise RuntimeError(
-                "找不到 FINLAB_API_TOKEN 環境變數，也沒有 finlab_config 模組。"
-                "請在 ~/.finlab/credentials.json 設定或 export FINLAB_API_TOKEN。"
-            )
+    ensure_finlab_login()
 
 
 def get_stock_name_map() -> dict[str, str]:

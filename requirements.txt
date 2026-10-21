@@ -1,16 +1,27 @@
-# finlab 量化平台
-finlab>=2.2.11
+# MA_Indicator — Streamlit + FinLab 量化平台
+# 雲端部署（Streamlit Community Cloud）用這份 requirements
+
+# FinLab（2.2.13+ 才有新版 OAuth 憑證機制）
+finlab>=2.2.13
 
 # Streamlit
 streamlit>=1.30
 
-# Plotly
-plotly>=5.18
-
-# Data
+# 資料處理
 pandas>=2.0
 numpy>=1.24
 
-# Streamlit Cloud 必裝
-cryptography>=41.0  # finlab credentials.json Fernet 加密
+# 圖表
+plotly>=5.18
+
+# HTTP 抓取（etfinfo / CNN FGI API）
 requests>=2.31
+
+# finlab credentials.json Fernet 加密（本機 OAuth 登入用）
+cryptography>=41.0
+
+# CSV 讀寫（pandas to_parquet 走 pyarrow）
+pyarrow>=14.0
+
+# 日期處理（若頁面用到）
+python-dateutil>=2.8

@@ -1,0 +1,11 @@
+# Streamlit 雲端部署設定
+# https://docs.streamlit.io/develop/ui-configuration
+
+[server]
+# 雲端部署不需要開瀏覽器
+headless = true
+# 允許 Streamlit Cloud 讀 secrets.toml
+enableStaticServing = true
+
+[browser]
+gatherUsageStats = false

@@ -37,21 +37,44 @@ head -1 ~/.openclaw/CURRENT_TUNNEL_URL.txt
 
 ## 三、Mac 剛開機怎麼做？
 
-三個服務都設成 launchd 自動啟動，開機就會自己起來：
+**答案是：什麼都不用做。** 三個服務全部設成 launchd 自動啟動：
 
-| 服務 | 作用 | 網址/位置 |
-|---|---|---|
-| `ai.stockslaves.daily-data-update` | 每日 20:20 更新 FinLab + ETF + FGI 資料 | — |
-| `ai.stockslaves.cf-tunnel` | Cloudflare 對外通道 | 網址寫進 `CURRENT_TUNNEL_URL.txt` |
+| 服務 | 作用 | 開機自動啟動 | 崩潰自動重啟 |
+|---|---|---|---|
+| `ai.stockslaves.streamlit` | Streamlit 本體 (port 8765) | ✅ | ✅ |
+| `ai.stockslaves.cf-tunnel` | Cloudflare 對外通道 | ✅ | ✅ |
+| `ai.stockslaves.daily-data-update` | 每日 20:20 更新資料 | — | — |
 
-**但 streamlit 本身要手動開**（因為要在專案目錄跑）：
+三個都是 `RunAtLoad=true` + `KeepAlive=true`，開機就會自己起來。
+
+### 那還要開著電腦嗎？
+
+**要。** 這是架構上的限制：網址是你的 Mac 轉出去的，Mac 關了就斷。
+
+| 狀態 | 網頁能不能用 |
+|---|---|
+| Mac 開著 + 接電源 | ✅ 可以 |
+| Mac 開著 + 接電源 + **合上蓋子** | ❌ **會睡著就斷** |
+| Mac 睡著 / 關機 | ❌ 斷 |
+| Mac 重開機 | ✅ 但**網址會變** |
+
+### ⚠️ 兩件要注意的事
+
+**1. 合上筆電蓋子會斷**
+你目前的設定（`pmset -g custom` 顯示 `sleep 0`）是「接電源時不自動睡眠」，
+但**合上蓋子還是會睡**。如果你要合蓋使用，需要插一個 dummy 電源（USB-C 接頭的假充電線），
+或是設定「閉蓋不睡」：
 
 ```bash
-cd ~/Desktop/排程運算/MA_Indicator
-/opt/anaconda3/envs/finlab3/bin/streamlit run app.py --server.port 8765 --server.headless true
+sudo pmset -a disablesleep 1   # 需要密碼
 ```
 
-或者用既有的啟動腳本（如果有）。
+**2. 網址會變**
+Mac 重開機後網址一定會變。開會前先看：
+
+```bash
+head -1 ~/.openclaw/CURRENT_TUNNEL_URL.txt
+```
 
 ---
 
@@ -125,7 +148,39 @@ launchctl bootstrap gui/$UID ~/Library/LaunchAgents/ai.stockslaves.cf-tunnel.pli
 
 | 檔案 | 說明 |
 |---|---|
-| `~/Library/LaunchAgents/ai.stockslaves.cf-tunnel.plist` | tunnel 的 launchd 設定 |
-| `~/.openclaw/jobs/cf_tunnel.sh` | tunnel 啟動腳本（會抓網址寫檔）|
+| `~/Library/LaunchAgents/ai.stockslaves.streamlit.plist` | Streamlit 服務設定 |
+| `~/Library/LaunchAgents/ai.stockslaves.cf-tunnel.plist` | tunnel 服務設定 |
+| `~/Library/LaunchAgents/ai.stockslaves.daily-data-update.plist` | 每日資料更新 |
+| `~/.openclaw/jobs/run_streamlit.sh` | Streamlit 啟動腳本 |
+| `~/.openclaw/jobs/cf_tunnel.sh` | tunnel 啟動腳本（抓網址寫檔）|
 | `~/.openclaw/CURRENT_TUNNEL_URL.txt` | **目前網址** |
+| `~/.openclaw/logs/streamlit-ma-indicator.*.log` | Streamlit 日誌 |
 | `~/.openclaw/logs/cf-tunnel-ma-indicator.*.log` | tunnel 日誌 |
+
+## 手動操作速查
+
+```bash
+# 看目前網址
+head -1 ~/.openclaw/CURRENT_TUNNEL_URL.txt
+
+# 查看所有服務
+launchctl list | grep ai.stockslaves
+
+# 重啟 streamlit
+launchctl kickstart -k gui/$UID/ai.stockslaves.streamlit
+
+# 重啟 tunnel（網址會變）
+launchctl kickstart -k gui/$UID/ai.stockslaves.cf-tunnel
+
+# 暫停對外通道
+launchctl bootout gui/$UID/ai.stockslaves.cf-tunnel
+launchctl bootstrap gui/$UID ~/Library/LaunchAgents/ai.stockslaves.cf-tunnel.plist
+
+# 停掉 streamlit（會省記憶體，但網頁就不能用）
+launchctl bootout gui/$UID/ai.stockslaves.streamlit
+launchctl bootstrap gui/$UID ~/Library/LaunchAgents/ai.stockslaves.streamlit.plist
+```
+
+⚠️ **踩坑紀錄**：`launchctl bootout` 之後要用 `bootstrap` 重新載入，
+但非 GUI session（Mavis/agent）有時會遇到 `Bootstrap failed: 5: Input/output error`（TCC 權限）。
+遇到就重試一次，通常第二次會成功。

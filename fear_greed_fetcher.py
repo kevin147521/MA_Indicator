@@ -146,15 +146,21 @@ CNN_COMPONENTS = {
 }
 
 
-def fetch_cnn_fgi() -> tuple[pd.DataFrame, pd.DataFrame]:
+def fetch_cnn_fgi() -> tuple[pd.DataFrame, pd.DataFrame, pd.Series]:
     """
-    抓 CNN 官方 Fear & Greed Index（美國）+ 各組件歷史。
+    抓 CNN 官方 Fear & Greed Index（美國）+ 各組件歷史 + S&P500 價格序列。
+
+    ★ 為什麼要多回傳 S&P500：
+        finlab `world_index:close` 的 ^GSPC 有 T+1 延遲（例如今天 00:49 只到昨天收盤），
+        但 CNN 自己的 `market_momentum_sp500` 已經帶今天盤中/收盤價。
+        拿 CNN 的當美股即時來源，畫圖/表格才不會慢一拍。
 
     Returns
     -------
-    (fgi_df, comp_df)
+    (fgi_df, comp_df, sp500)
         fgi_df : index=date, columns=[score, rating]
         comp_df: index=date, columns=[組件中文短名, ...] 每組件 0-100
+        sp500  : index=date, values=float — CNN 來源的 S&P500 收盤價
     """
     import requests
 
@@ -171,9 +177,8 @@ def fetch_cnn_fgi() -> tuple[pd.DataFrame, pd.DataFrame]:
             "rating": [p.get("rating") for p in rows],
         },
         index=pd.to_datetime([p["x"] for p in rows], unit="ms", utc=True)
-        .tz_convert("Asia/Taipei")
         .tz_localize(None)
-        .normalize(),
+        .normalize(),  # x 已是 UTC，直接取日期
     )
     fgi_df = fgi_df[~fgi_df.index.duplicated(keep="last")].sort_index()
     fgi_df.index.name = "date"
@@ -189,9 +194,8 @@ def fetch_cnn_fgi() -> tuple[pd.DataFrame, pd.DataFrame]:
             continue
         idx = (
             pd.to_datetime([p["x"] for p in pts], unit="ms", utc=True)
-            .tz_convert("Asia/Taipei")
             .tz_localize(None)
-            .normalize()
+            .normalize()  # x 已是 UTC
         )
         s = pd.Series([p.get("y") for p in pts], index=idx, name=short_name)
         s = s[~s.index.duplicated(keep="last")]
@@ -200,7 +204,21 @@ def fetch_cnn_fgi() -> tuple[pd.DataFrame, pd.DataFrame]:
     comp_df = pd.DataFrame(comp_dict).sort_index()
     comp_df.index.name = "date"
 
-    return fgi_df, comp_df
+    # --- CNN 來源的 S&P500 價格（比 finlab 即時，win=用來覆蓋 ^GSPC）---
+    sp500 = pd.Series(dtype=float, name="^GSPC")
+    mm = payload.get("market_momentum_sp500", {})
+    pts = mm.get("data", [])
+    if pts:
+        sp_idx = (
+            pd.to_datetime([p["x"] for p in pts], unit="ms", utc=True)
+            .tz_localize(None)
+            .normalize()  # x 已是 UTC
+        )
+        sp500 = pd.Series([p.get("y") for p in pts], index=sp_idx, name="^GSPC")
+        sp500 = sp500[~sp500.index.duplicated(keep="last")].sort_index()
+        sp500 = sp500[sp500 > 0]  # 濾掉 API 偶發的 0 值
+
+    return fgi_df, comp_df, sp500
 
 
 # ============================================================
@@ -359,13 +377,23 @@ def fetch_all(start: str = START_DATE, force: bool = False,
     # --- 指數水位（一定要重抓：FGI 依賴最新一天，舊 cache 會讓值停滯）---
     index_df, volume_df = fetch_index_levels()
 
-    # --- CNN 官方 FGI + 組件 ---
+    # --- CNN 官方 FGI + 組件 + CNN 來源的 S&P500 ---
     cnn_err = None
+    cnn_sp500 = pd.Series(dtype=float)
     try:
-        cnn_fgi, cnn_comp = fetch_cnn_fgi()
+        cnn_fgi, cnn_comp, cnn_sp500 = fetch_cnn_fgi()
     except Exception as e:
         cnn_err = str(e)
         cnn_fgi, cnn_comp = pd.DataFrame(), pd.DataFrame()
+
+    # ★ 用 CNN 的 S&P500 補上 finlab 的落後（finlab T+1，CNN 有當日）
+    #   策略：CNN 的資料一律覆蓋 finlab 同日期的值 + 補上 finlab 沒有的日期
+    if not cnn_sp500.empty and "^GSPC" in index_df.columns:
+        merged = index_df["^GSPC"].copy()
+        for d, v in cnn_sp500.items():
+            merged[d] = v
+        merged = merged.sort_index()
+        index_df["^GSPC"] = merged
 
     # --- 自算台日韓 ---
     tw_kr_jp_fgi, tw_kr_jp_comp = compute_all_fgi(index_df, volume_df)

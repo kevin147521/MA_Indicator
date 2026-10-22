@@ -33,19 +33,32 @@ from fear_greed_fetcher import (
 # ============================================================
 # 資料載入
 # ============================================================
-@st.cache_data(ttl=1800, show_spinner="載入 Fear & Greed 資料…")
-def _load():
+def _fetch_live(force: bool):
+    """實際抓資料（繞過 streamlit 快取）。"""
     try:
+        if force:
+            from fear_greed_fetcher import fetch_all
+            return fetch_all(force=True, save=True)
         return load_fgi_data()
     except Exception as e:
         try:
             from data_fetcher import ensure_finlab_login
             ensure_finlab_login()
+            if force:
+                from fear_greed_fetcher import fetch_all
+                return fetch_all(force=True, save=True)
             load_fgi_data.clear() if hasattr(load_fgi_data, "clear") else None
             return load_fgi_data()
         except Exception as e2:
             st.error(f"載入 Fear & Greed 資料失敗：{e} / {e2}")
             st.stop()
+
+
+# ★ 快取 5 分鐘：FGI 是情緒指標，盤中要跟得上
+#   force=True 時跳過 streamlit cache，直接重抓
+@st.cache_data(ttl=300, show_spinner="載入 Fear & Greed 資料…")
+def _load(force: bool = False):
+    return _fetch_live(force)
 
 
 # ============================================================
@@ -279,7 +292,27 @@ def render_fear_greed_page():
         "**越低越恐懼，越高越貪婪。**"
     )
 
-    bundle = _load()
+    # ---------- 即時更新列 ----------
+    from datetime import datetime as _dt
+    from fear_greed_fetcher import FGI_HISTORY_FILE
+
+    _c1, _c2, _c3 = st.columns([1, 1, 3])
+
+    with _c1:
+        _force = st.button("🔄 立即更新", width="stretch",
+                           help="強制重抓 CNN 官方 FGI + 四大指數（約 10-20 秒）")
+    with _c2:
+        st.caption(" ")
+        st.caption(f"更新於 {_dt.now():%H:%M:%S}")
+
+    if _force:
+        _load.clear()
+        st.session_state["fgi_force"] = True
+        st.rerun()
+
+    bundle = _load(force=st.session_state.get("fgi_force", False))
+    st.session_state["fgi_force"] = False
+
     fgi = bundle["fgi"]
     index_df = bundle["index"]
     comp = bundle["comp"]
@@ -288,6 +321,27 @@ def render_fear_greed_page():
     if fgi.empty:
         st.error("沒有 Fear & Greed 資料，請檢查網路或 finlab 連線")
         st.stop()
+
+    # ★ 盤中過濾：今天還沒收盤的市場會留 NaN（例如現在是台灣凌晨，
+    #   台/日/韓今日還沒交易），這筆 NaN 會在圖上造成假斷點 → 整列丟掉
+    _today = _dt.now().date()
+    _drop = [d for d in fgi.index if d.date() == _today and fgi.loc[d].isna().any()]
+    if _drop:
+        fgi = fgi.drop(index=_drop)
+        rating_cn = rating_cn.drop(index=[d for d in _drop if d in rating_cn.index],
+                                  errors="ignore")
+
+    # 顯示實際資料最後一筆的時間（CNN 美股盤中會更新，台日韓收盤後才更新）
+    _last_cnn = fgi["US"].dropna().index[-1] if "US" in fgi.columns and fgi["US"].notna().any() else None
+    _last_idx = index_df.dropna(how="all").index[-1] if not index_df.empty else None
+    if _last_cnn is not None:
+        _lag = (_dt.now().date() - _last_cnn.date()).days
+        _age_txt = f"今日" if _lag == 0 else f"{_lag} 天前"
+        st.caption(
+            f"📡 資料時點：美國 CNN FGI **{_last_cnn:%Y-%m-%d}**（{_age_txt}）"
+            + (f" · 指數水位 **{_last_idx:%Y-%m-%d}**" if _last_idx is not None else "")
+            + " ｜ 美股盤中 CNN 約每 15-30 分鐘更新一次"
+        )
 
     # ---------- 控制列 ----------
     st.markdown("---")
@@ -339,7 +393,8 @@ def render_fear_greed_page():
                 "當日漲跌": st.column_config.TextColumn("當日漲跌"),
             },
         )
-        st.caption(f"資料時間：{pd.Timestamp.now():%Y-%m-%d %H:%M:%S}（台北時間）")
+        st.caption(f"資料擷取時間：{pd.Timestamp.now():%Y-%m-%d %H:%M:%S}（台北時間）"
+                  f"｜ 美國 CNN 官方盤中每 15-30 分鐘更新 · 台/日/韓為當日收盤後計算")
         st.caption(
             f"資料來源：美國 = CNN 官方（{bundle.get('fgi_us_source', '—')}）· "
             "台/日/韓 = 自算 · 指數 = FinLab"

@@ -312,15 +312,39 @@ def compute_market_fgi(close: pd.Series, vol_proxy: Optional[pd.Series] = None,
     # 4) 波動：實現波動率反向（波動越高越恐慌）
     comp["波動"] = _rolling_percentile(vol20, window, ascending=False, min_periods=min_periods)
 
-    # 5) 量能：20 日均量 / 60 日均量
+    # 5) 量能：價量配合（價漲放量 = 樂觀；價跌量縮 = 恐慌）
+    #    ⚠️ 踩坑記錄（2026-10-23 修正）：
+    #    原設計是「量能變化率取滾動百分位」，但語意錯了。
+    #    長期萎縮的市場（韓國 2026-10 成交量 60 日縮 49%），
+    #    「縮量幅度變小」會被算成「量能改善」→ 高分，
+    #    跟其他 4 個恐慌組件完全矛盾（量能 90 vs 其他 10-34）。
+    #    修正：改用價量配合語意 —
+    #      - 價漲 + 放量 → 貪婪（突破有量能支撐）
+    #      - 價跌 + 縮量 → 恐慌（跌無量，賣壓不重但也無人接盤）
+    #      - 價跌 + 放量 → 極度恐慌（殺量）
     if vol_proxy is not None:
         v = vol_proxy.astype(float).reindex(c.index)
-        vol_ratio = v.rolling(20).mean() / v.rolling(60).mean()
-        comp["量能"] = _rolling_percentile(vol_ratio, window, ascending=True, min_periods=min_periods)
+        v = v.replace(0, np.nan)
+        v = v.where(v > 0)
+        m20, m60 = v.rolling(20).mean(), v.rolling(60).mean()
+        # 價量配合分數：+100 = 價漲放量 / -100 = 價跌放量
+        ret_5 = c.pct_change(5) * 100
+        vol_chg = ((m20 - m60) / m60 * 100).where((m60 > 0) & m60.notna())
+        # 價格 5 日報酬率 + 量能變化率，相加後取滾動百分位
+        pv = (ret_5 + vol_chg)
+        comp["量能"] = _rolling_percentile(pv, window, ascending=True,
+                                          min_periods=min_periods)
+        # 收盤日成交量尚未更新 → 該日量能不可信
+        _bad = v.isna() & c.notna()
+        comp.loc[_bad, "量能"] = np.nan
     else:
         comp["量能"] = np.nan
 
-    fgi = comp.mean(axis=1, skipna=False)
+    # FGI = 組件平均。至少要有 3 個組件有效才輸出（量能常因未更新而缺）。
+    #   有效組件少於 3 個 → NaN（寧可沒資料也不要給一個失真的分數）
+    valid_cnt = comp.notna().sum(axis=1)
+    fgi = comp.mean(axis=1, skipna=True)
+    fgi[valid_cnt < 3] = np.nan
     return fgi, comp
 
 

@@ -62,6 +62,139 @@ def _load(force: bool = False):
 
 
 # ============================================================
+# 即時報價面板
+# ============================================================
+@st.cache_data(ttl=120, show_spinner="抓即時報價…")
+def _load_realtime():
+    try:
+        from realtime_fetcher import fetch_realtime_all
+        return fetch_realtime_all()
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _render_realtime_panel(fgi: pd.DataFrame, rating_cn: pd.DataFrame,
+                           picked: list[str]):
+    """即時指數報價 + FGI 對照卡片"""
+    from realtime_fetcher import REALTIME_MARKETS
+
+    # 手動刷新鈕
+    _r1, _r2 = st.columns([1, 4])
+    with _r1:
+        if st.button("🔄 重新抓報價", width="stretch",
+                     help="台股盤中會跳動，建議每 10-20 分鐘按一次"):
+            _load_realtime.clear()
+            st.rerun()
+    with _r2:
+        st.caption("台股盤中 TWSE 官方即時 · 美股 CNN 每 15-30 分鐘 · 日韓為最近收盤")
+
+    rt = _load_realtime()
+
+    if rt.get("error"):
+        st.warning(f"即時報價抓取失敗：{rt['error']}")
+        return
+
+    cols = st.columns(len(picked) if picked else 4)
+    for i, mkt in enumerate(picked):
+        if i >= len(cols):
+            break
+        meta = REALTIME_MARKETS.get(mkt, {"label": mkt, "cn": mkt})
+        r = rt.get(mkt) or {}
+        with cols[i]:
+            if r.get("error"):
+                st.error(f"{meta['label']}\n\n{r['error']}")
+                continue
+
+            price = r.get("price")
+            chg = r.get("change_pct")
+            # FGI（同一市場）
+            fgi_val = None
+            if mkt in fgi.columns:
+                s = fgi[mkt].dropna()
+                if not s.empty:
+                    fgi_val = float(s.iloc[-1])
+            rating = (rating_cn[mkt].dropna().iloc[-1]
+                      if mkt in rating_cn.columns
+                      and not rating_cn[mkt].dropna().empty else "—")
+
+            # 台股漲跌用紅、跌用綠（台股慣例）；美股用綠漲紅跌
+            if chg is None:
+                delta_txt, delta_color = "—", "gray"
+            else:
+                arrow = "▲" if chg > 0 else ("▼" if chg < 0 else "─")
+                delta_txt = f"{arrow} {chg:+.2f}%"
+                up_is_good = mkt != "TW"
+                delta_color = "normal" if ((chg > 0) == up_is_good) else "inverse"
+
+            st.metric(
+                f"{meta['label']}",
+                f"{price:,.2f}" if price else "—",
+                delta=delta_txt,
+                delta_color=delta_color,
+            )
+            line2 = f"FGI **{fgi_val:.0f}** ({rating})" if fgi_val else "FGI —"
+            st.markdown(
+                f"<div style='font-size:0.82rem;line-height:1.5'>"
+                f"{line2}<br>"
+                f"<span style='color:#888'>資料 {r.get('date','—')} "
+                f"· {r.get('source','—')}</span></div>",
+                unsafe_allow_html=True,
+            )
+            # 成交量（台股有）
+            if r.get("turnover"):
+                st.markdown(
+                    f"<div style='font-size:0.78rem;color:#888'>"
+                    f"成交金額 {r['turnover']/1e8:,.0f} 億</div>",
+                    unsafe_allow_html=True)
+
+    # 交叉判讀提示
+    st.caption(_realtime_hint(rt, fgi, picked))
+
+    st.caption(f"報價擷取時間：{rt.get('fetched_at','—')}")
+
+
+def _realtime_hint(rt: dict, fgi: pd.DataFrame, picked: list[str]) -> str:
+    """根據「即時漲跌」vs「FGI 情緒」給一句交叉判讀"""
+    drops, rises = [], []
+    for mkt in picked:
+        r = rt.get(mkt) or {}
+        chg = r.get("change_pct")
+        if chg is None:
+            continue
+        label = MARKETS.get(mkt, {}).get("cn", mkt)
+        (drops if chg < -1.5 else (rises if chg > 1.5 else [])).append(
+            (label, chg))
+
+    parts = []
+    if drops:
+        parts.append(
+            "大跌：" + "、".join(f"{l} {c:+.2f}%" for l, c in drops))
+    if rises:
+        parts.append(
+            "大漲：" + "、".join(f"{l} {c:+.2f}%" for l, c in rises))
+
+    if not parts:
+        return "💡 各國指數波動都在 ±1.5% 以內，屬正常盤勢。"
+
+    # 找出大跌但 FGI 還很高的市場（FGI 鈍化 = 可能還沒跌夠）
+    lagging = []
+    for l, c in drops:
+        for mkt in picked:
+            if MARKETS.get(mkt, {}).get("cn") != l:
+                continue
+            if mkt in fgi.columns:
+                s = fgi[mkt].dropna()
+                if not s.empty and s.iloc[-1] > 45:
+                    lagging.append(f"{l}（FGI {s.iloc[-1]:.0f} 偏高，"
+                                   f"情緒指數還沒反映跌幅）")
+    hint = " ｜ ".join(parts)
+    if lagging:
+        hint += f"\n\n⚠️ **注意**：" + "；".join(lagging) + \
+            "。FGI 用 120 日滾動窗口，對單日暴跌反應較慢，別只看 FGI 判斷底部。"
+    return hint
+
+
+# ============================================================
 # 圖表：FGI Timeline
 # ============================================================
 def _add_fgi_bands(fig: go.Figure) -> go.Figure:
@@ -375,6 +508,11 @@ def render_fear_greed_page():
     if not picked:
         st.warning("請至少選一個市場")
         st.stop()
+
+    # ---------- 0. 即時報價（最想先看的）----------
+    st.markdown("---")
+    st.subheader("📡 即時報價 × FGI 對照")
+    _render_realtime_panel(fgi, rating_cn, picked)
 
     # ---------- 1. FGI Timeline ----------
     st.markdown("---")

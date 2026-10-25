@@ -8,7 +8,7 @@
 
 | 網址 | 服務 | Port | 說明 |
 |---|---|---|---|
-| `https://all.kevin14752.com` | **專案彙整入口** | 8502 | 密碼鎖（`kevin` / `kevin888`）|
+| `https://all.kevin14752.com` | **專案彙整入口** | 8502 | 網頁表單密碼鎖（密碼 `kevin888`）|
 | `https://ma.kevin14752.com` | 台股分析平台 | 8765 | MA_Indicator，12 個 page |
 | `https://collect.kevin14752.com` | 集保大戶持股查詢 | 8501 | holders_app |
 | `https://kevin147521.github.io/fomo-archive/` | FOMO 文章索引 | — | GitHub Pages（靜態）|
@@ -98,11 +98,24 @@ tail -f ~/.openclaw/logs/cf-tunnel-named.stderr.log
 
 ## 密碼鎖說明
 
-`all.kevin14752.com` 用 **HTTP Basic Auth**（伺服器端驗證）。
+`all.kevin14752.com` 用 **網頁內嵌登入表單 + session cookie**（不是 HTTP Basic Auth）。
 
-- 帳號：`kevin`
 - 密碼：`kevin888`
-- 儲存位置：`~/.openclaw/jobs/serve_all_portal.py` 的 `PASSWORD_SHA256`（SHA-256，不存明文）
+- 介面：頁面中央的輸入框 + 「記住我（30 天）」勾選框
+- 勾「記住我」→ 密碼存 localStorage + 30 天 cookie，之後自動登入
+- 不勾 → session cookie，關掉瀏覽器就失效
+- 登入後頁面右下角有「登出」
+
+### 為什麼不用 HTTP Basic Auth？
+Basic Auth 會跳出**小視窗輸入框**，在手機/小螢幕上非常難用（user 實際反饋）。
+改成頁面內嵌表單後，體驗等同一般網站登入。
+
+### 實作細節
+- 密碼 SHA-256 存放於 `~/.openclaw/jobs/serve_all_portal.py` 的 `PASSWORD_SHA256`（不存明文）
+- session 簽章密鑰持久化在 `~/.openclaw/jobs/.session_secret`（chmod 600）
+  ⚠️ **必須持久化**，否則服務重啟後「記住我」會失效
+- cookie: `kp_session`，HttpOnly + SameSite=Lax，30 天效期
+- 偽造 cookie 會被 HMAC 驗證擋下
 
 ### 改密碼
 
@@ -116,7 +129,11 @@ python3 -c "import hashlib; print(hashlib.sha256(b'新密碼'.encode()).hexdiges
 launchctl kickstart -k gui/$UID/ai.stockslaves.all-portal
 ```
 
-⚠️ **realm 欄位不能放中文** — HTTP header 只支援 latin-1，放中文會讓伺服器直接崩（已踩過）。
+⚠️ 如果改密碼後舊 cookie 還能通，重啟服務即可（清掉 secret 檔也會全部失效）：
+```bash
+mavis-trash ~/.openclaw/jobs/.session_secret
+launchctl kickstart -k gui/$UID/ai.stockslaves.all-portal
+```
 
 ---
 

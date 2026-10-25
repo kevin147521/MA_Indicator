@@ -4,12 +4,13 @@
 
 ---
 
-## 📌 現在的狀態
+## 📌 現在的狀態（2026-10-25 已完成）
 
 | 項目 | 狀態 |
 |---|---|
-| **入口頁** | ✅ `https://kevin147521.github.io/fomo-archive/` → 已有「台股量化分析平台」卡片 |
-| **卡片連結指向** | `https://kevin-taiwan-stocks.streamlit.app`（先指這個，網域好了再換）|
+| **永久網址** | ✅ **`https://ma.kevin14752.com`**（Cloudflare named tunnel，永不變）|
+| **入口頁** | ✅ `https://kevin147521.github.io/fomo-archive/` → 「台股量化分析平台」卡片 |
+| **卡片連結指向** | ✅ `https://ma.kevin14752.com` |
 | **本機 Streamlit** | ✅ launchd 管理，開機自啟 + 崩潰重啟 |
 | **本機 tunnel** | ✅ quick tunnel（網址會變）|
 | **FinLab 認證** | ✅ `~/.finlab/credentials.json` 自動續期，**不用手動更新** |
@@ -27,7 +28,16 @@
 
 ---
 
-## 🚀 升級成永久網址（3 步）
+## ✅ 已完成的設定紀錄（2026-10-25）
+
+- 網域：`kevin14752.com`（nameserver: clay.ns.cloudflare.com / bailey.ns.cloudflare.com）
+- Tunnel：`ma-indicator`，ID `1064122b-6d7e-485f-9b4d-67cc347a799f`
+- 設定檔：`~/.cloudflared/config.yml` → `ma.kevin14752.com` → `http://localhost:8765`
+- launchd：`ai.stockslaves.cf-tunnel-named`（開機自啟 + 崩潰重啟）
+- 憑證：`~/.cloudflared/cert.pem` + `~/.cloudflared/1064122b-*.json`（**勿外流**）
+- 舊的 quick tunnel（`ai.stockslaves.cf-tunnel`）已停用，保留作備援
+
+## 📖 原始設定流程（重跑用）
 
 ### Step 1 — 註冊網域
 

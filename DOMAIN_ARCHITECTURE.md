@@ -117,19 +117,36 @@ Basic Auth 會跳出**小視窗輸入框**，在手機/小螢幕上非常難用�
 - cookie: `kp_session`，HttpOnly + SameSite=Lax，30 天效期
 - 偽造 cookie 會被 HMAC 驗證擋下
 
-### 改密碼
+### 🔐 改密碼（網頁上直接改，不用碰程式碼）
+
+登入後點頁面右下角的 **⚙️ 設定** → 填「目前密碼 / 新密碼 / 確認新密碼」→ **更新密碼**。
+
+流程：
+1. `POST /api/change-password` 驗證目前密碼
+2. 新密碼 SHA-256 寫入 `~/.openclaw/jobs/.password_hash`（chmod 600）
+3. 自動清除所有 session（含自己），強制重新登入
+4. 前端 localStorage 的記住密碼也一併清掉
+
+**安全設計**：
+- 必須先登入 + 輸入正確的目前密碼才能改
+- 兩次新密碼必須一致、至少 4 字元、不能跟舊密碼相同
+- 改密碼後所有舊 session 立即失效（避免別人的 cookie 還能用）
+- 密碼以 SHA-256 存檔，不寫在 .py 裡
+
+### 改密碼（command line 備援）
 
 ```bash
 # 1. 算新 hash
 python3 -c "import hashlib; print(hashlib.sha256(b'新密碼'.encode()).hexdigest())"
 
-# 2. 貼到 serve_all_portal.py 的 PASSWORD_SHA256
+# 2. 寫入 hash 檔
+echo "<hash>" > ~/.openclaw/jobs/.password_hash
 
 # 3. 重啟
 launchctl kickstart -k gui/$UID/ai.stockslaves.all-portal
 ```
 
-⚠️ 如果改密碼後舊 cookie 還能通，重啟服務即可（清掉 secret 檔也會全部失效）：
+⚠️ 如果舊 cookie 還能通，清掉 secret 檔讓全部失效：
 ```bash
 mavis-trash ~/.openclaw/jobs/.session_secret
 launchctl kickstart -k gui/$UID/ai.stockslaves.all-portal

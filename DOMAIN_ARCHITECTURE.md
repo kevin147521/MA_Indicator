@@ -11,6 +11,7 @@
 | `https://all.kevin14752.com` | **專案彙整入口** | 8502 | 網頁表單密碼鎖（密碼 `kevin888`）|
 | `https://ma.kevin14752.com` | 台股分析平台 | 8765 | MA_Indicator，12 個 page |
 | `https://collect.kevin14752.com` | 集保大戶持股查詢 | 8501 | holders_app |
+| `https://malianjie.kevin14752.com` | 馬臉姐影片庫 | 8503 | malianjie_archive（45GB 影片）|
 | `https://kevin147521.github.io/fomo-archive/` | FOMO 文章索引 | — | GitHub Pages（靜態）|
 
 **另外**：`https://kevin-taiwan-stocks.streamlit.app` → Streamlit Cloud 版（備援，非主力）
@@ -50,6 +51,7 @@ MA_Indicator   holders_app    all_portal
 | `ai.stockslaves.streamlit` | 台股分析平台 | `/Users/kevin/Desktop/排程運算/MA_Indicator` |
 | `ai.stockslaves.holders-streamlit` | 集保大戶持股 | `/Users/kevin/Desktop/排程運算/holders_app` |
 | `ai.stockslaves.all-portal` | 彙整入口 | `~/.openclaw/jobs/serve_all_portal.py` |
+| `ai.stockslaves.malianjie-archive` | 馬臉姐影片庫 | `~/.openclaw/jobs/serve_malianjie.py` |
 | `ai.stockslaves.cf-tunnel-named` | Cloudflare Tunnel | `~/.cloudflared/config.yml` |
 | `ai.stockslaves.daily-data-update` | 每日 20:20 資料更新 | 排程 |
 
@@ -172,6 +174,7 @@ launchctl kickstart -k gui/$UID/ai.stockslaves.all-portal
 - 8765 — MA_Indicator
 - 8501 — holders_app
 - 8502 — all_portal
+- 8503 — malianjie_archive（影片庫）
 - 8765 也被舊的 quick tunnel 用過，現在 named tunnel 取代
 
 ---
@@ -182,7 +185,8 @@ launchctl kickstart -k gui/$UID/ai.stockslaves.all-portal
 |---|---|
 | `~/.cloudflared/config.yml` | Tunnel 設定（三個 hostname → 三個 port）|
 | `~/.openclaw/jobs/serve_all_portal.py` | 彙整入口伺服器（Basic Auth）|
-| `~/.openclaw/jobs/all_portal/index.html` | 彙整入口頁面 |
+| `~/.openclaw/jobs/all_portal/index.html` | 彙整入口頁面（4 張卡）|
+| `~/.openclaw/jobs/serve_malianjie.py` | 影片庫伺服器（支援 Range）|
 | `~/.openclaw/jobs/run_streamlit.sh` | MA_Indicator 啟動腳本 |
 | `~/.openclaw/jobs/run_holders_streamlit.sh` | holders_app 啟動腳本 |
 | `~/.openclaw/jobs/setup_named_tunnel.sh` | tunnel 設定腳本 |
